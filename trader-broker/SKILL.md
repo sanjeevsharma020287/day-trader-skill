@@ -151,9 +151,12 @@ that draft orders to Needs approval too.
    JSON the ticket printed. Claude's card appears: Allow once or Deny.
    A yes expires with its risk PASS, and counts only on the check it was given
    on. If `show` says EXPIRED (the card was left open, or the session
-   stopped), do not place it: run `/trader-risk` again and ask for a new yes.
-   After a new check the old yes no longer counts, so the ticket is READY
-   again and needs a new yes. Record nothing for the expired one.
+   stopped), or says your yes was on an earlier check, do not place it. First
+   look at the broker's open orders and positions for that symbol: the order
+   may have gone out without its result being recorded. If it was sent,
+   record what happened (step 5). Only if it was not, record `ticket.py result
+   --index N --status unsent`. Then run `/trader-risk` again and ask for a new
+   yes. Until one of those is recorded, the ticket stays NOT READY.
 5. Record what happened: `ticket.py result --index N --status placed
    --broker-id <id> --filled-qty Q --filled-price P` (the fill from the
    response or `get_open_position`), or `--status denied`, or `--status failed`

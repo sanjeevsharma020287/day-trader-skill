@@ -324,43 +324,101 @@ class Flow(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual([r["status"] for r in self.state_doc()["orders"]], ["approved", "failed"])
 
-    def test_a_new_check_never_revives_an_old_yes(self):
-        # Fable R5(a): yes 10:20 on the 10:15 check, card left open, a new check at 14:00
+    HELD = ("NOT READY: your yes at %s was on an earlier check. Look at the broker's open orders and "
+            "positions for TSLA, then record ticket.py result --status placed (or failed or denied) if it "
+            "was sent, or ticket.py result --status unsent if it was not")
+
+    def test_a_new_check_holds_an_old_yes_until_unsent(self):
+        # Fable R5(a) + R8: yes 10:20 on the 10:15 check, card left open, a new check at 14:00
         self.assertEqual(self.run_risk(), 0)
         code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.run_risk(now="2026-10-19 14:00"), 0)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
+        self.assertEqual(code, 1)
         self.assertNotIn("APPROVED", text)
-        self.assertIn("READY: trader-risk PASS, waiting for your yes (your yes at 2026-10-19T10:20:00-04:00 "
-                      "was on an earlier check and no longer counts)", text)
+        self.assertIn(self.HELD % "2026-10-19T10:20:00-04:00", text)
+        before = self.state_doc()
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:00"))
+        self.assertEqual(code, 1)
+        self.assertIn("was on an earlier check", err)
+        self.assertEqual(self.state_doc(), before)  # refused, nothing written
+        code, text, _ = run(self.args("result", "--index", "1", "--status", "unsent", now="2026-10-19 14:00"))
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing was sent", text)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
+        self.assertIn("READY: trader-risk PASS, waiting for your yes", text)
         code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:00"))
         self.assertEqual(code, 0, err)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:01"))
         self.assertIn("APPROVED by you at 2026-10-19T14:00:00-04:00, waiting for the place_stock_order", text)
         recs = self.state_doc()["orders"]
-        self.assertEqual([r["status"] for r in recs], ["approved", "approved"])
+        self.assertEqual([r["status"] for r in recs], ["approved", "unsent", "approved"])
         with open(self.risk) as fh:
-            self.assertEqual(recs[1]["risk_check"], json.load(fh)["check_id"])
-        self.assertNotEqual(recs[0]["risk_check"], recs[1]["risk_check"])
-        # even a re-check in the same minute is a new check
+            self.assertEqual(recs[2]["risk_check"], json.load(fh)["check_id"])
+        self.assertNotEqual(recs[0]["risk_check"], recs[2]["risk_check"])
+        # the log names an unsent record for what it is
+        code, text, _ = run(["log", "--state", self.state, "--now", "2026-10-19 14:01"])
+        self.assertIn("unsent", text)
+        self.assertIn("(never sent; the yes no longer counts)", text)
+        self.assertIn("0 placed today.", text)
+        # even a re-check in the same minute is a new check: the 14:00 yes is held again
         self.assertEqual(self.run_risk(now="2026-10-19 14:01"), 0)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:01"))
-        self.assertIn("READY: trader-risk PASS", text)
+        self.assertIn(self.HELD % "2026-10-19T14:00:00-04:00", text)
 
-    def test_an_expired_yes_is_ready_again_after_a_new_check(self):
-        # Fable R5(b): EXPIRED, then the path SKILL.md gives: a new check and a new yes
+    def test_an_expired_yes_takes_unsent_then_a_new_check(self):
+        # Fable R5(b) + R8: EXPIRED on the same check, then the steps in order
         self.assertEqual(self.run_risk(), 0)
         run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
         self.assertIn("EXPIRED: your yes at 2026-10-19T10:20:00-04:00 no longer holds", text)
-        self.assertIn("Do not place it; run check.py again, then ask for a new yes", text)
+        self.assertIn("Do not place it; record ticket.py result --status unsent (or what really happened), "
+                      "run check.py again, then ask for a new yes", text)
+        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent", now="2026-10-19 10:31"))
+        self.assertEqual(code, 0, err)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
+        self.assertIn("NOT READY: the risk check is 16 minutes old", text)  # unsent alone is no PASS
         self.assertEqual(self.run_risk(now="2026-10-19 10:31"), 0)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
         self.assertEqual(code, 0)
         self.assertIn("READY: trader-risk PASS", text)
         code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:31"))
         self.assertEqual(code, 0, err)
+
+    def test_placed_against_a_held_yes_is_done_for_good(self):
+        self.assertEqual(self.run_risk(), 0)
+        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
+        self.assertEqual(self.run_risk(now="2026-10-19 14:00"), 0)
+        code, _, err = run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc",
+                                     now="2026-10-19 14:00"))
+        self.assertEqual(code, 0, err)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
+        self.assertIn("DONE: placed at 2026-10-19T14:00:00-04:00", text)
+        # the real re-check blocks it as a duplicate (TSLA placed today)
+        self.assertEqual(self.run_risk(now="2026-10-19 14:05"), 1)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:05"))
+        self.assertIn("BLOCKED by trader-risk: duplicate", text)
+        # even a fresh PASS that did not see the log leaves it DONE: placed is terminal
+        with redirect_stdout(io.StringIO()):
+            check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf, "--prices",
+                        self.none, "--state", self.none, "--now", "2026-10-19 14:05", "--out", self.risk])
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:05"))
+        self.assertIn("DONE: placed at 2026-10-19T14:00:00-04:00", text)
+        code, _, _ = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:05"))
+        self.assertEqual(code, 1)
+
+    def test_unsent_needs_a_yes_before_it(self):
+        self.assertEqual(self.run_risk(), 0)
+        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent"))
+        self.assertEqual(code, 1)
+        self.assertIn("a result can only follow an approval", err)
+        self.assertFalse(os.path.exists(self.state))
+        run(self.args("approve", "--index", "1", "--reply", "yes"))
+        run(self.args("result", "--index", "1", "--status", "unsent"))
+        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent"))
+        self.assertEqual(code, 1)  # not twice: unsent is no yes
+        self.assertIn("a result can only follow an approval", err)
 
     def test_a_failed_order_stays_done_and_a_yes_needs_a_check_id(self):
         # a real failed is untouched by R5: the broker may hold it
@@ -377,17 +435,17 @@ class Flow(unittest.TestCase):
         os.remove(self.state)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:20"))
         self.assertIn("NOT READY: the risk check is from an older trader-risk with no check id", text)
-        # a yes from an older trader-broker (no risk_check) on such a check is bound to nothing
         run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
         self.assertFalse(os.path.exists(self.state))  # refused: not READY
+        # a yes from an older trader-broker (no risk_check) on such a check is bound to nothing: held
         with open(self.risk) as fh:
             fp = json.load(fh)["results"][0]["fingerprint"]
         with open(self.state, "w") as fh:
-            json.dump({"orders": [{"at": "2026-10-19T10:20:00-04:00", "date": TODAY, "index": 1,
+            json.dump({"orders": [{"at": "2026-10-19T10:20:00-04:00", "date": TODAY, "index": 1, "symbol": "TSLA",
                                    "fingerprint": fp, "status": "approved"}]}, fh)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:21"))
         self.assertNotIn("APPROVED", text)
-        self.assertIn("was on an earlier check and no longer counts", text)
+        self.assertIn(self.HELD % "2026-10-19T10:20:00-04:00", text)
 
     def test_a_yes_expires_after_15_minutes_too(self):
         self.assertEqual(self.run_risk(), 0)

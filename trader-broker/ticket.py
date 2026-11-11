@@ -16,7 +16,9 @@ work around the one moment that matters, your yes:
             different stock or amount, and any order that is not READY.
   decline   records a no.
   result    records what happened after the Allow once / Deny card:
-            placed (with the broker's order id), denied, or failed.
+            placed (with the broker's order id), denied, or failed; or
+            unsent, when a held or expired yes never went out (check the
+            broker first). unsent is not final: a new check and a new yes follow.
   fill      records a fill in trader/portfolio.json (cash and shares).
   flatten   builds a sell ticket that closes a symbol's open position by
             flat_by. It still goes through trader-risk and your yes.
@@ -368,27 +370,33 @@ def status_of(order, risk, state, today, now):
     if rv.get("verdict") != "PASS":
         return False, "BLOCKED by trader-risk: " + "; ".join(rv.get("reasons", [])), rv
     rec = latest(state, fp, today)
-    older = ""
+    if rec and rec.get("status") == "unsent":
+        rec = None  # recorded as never sent: the order takes the normal path and a fresh PASS needs a new yes
     if rec and rec.get("status") == "approved" and (not risk.get("check_id")
                                                     or rec.get("risk_check") != risk.get("check_id")):
-        # a yes counts only on the check it was given on: a new check never revives it (R5)
-        older, rec = " (your yes at %s was on an earlier check and no longer counts)" % rec.get("at"), None
+        # a yes counts only on the check it was given on, and the tool cannot tell "sent, not recorded"
+        # from "never sent": hold it until what happened is recorded (R5, R8)
+        return False, ("NOT READY: your yes at %s was on an earlier check. Look at the broker's open orders "
+                       "and positions for %s, then record ticket.py result --status placed (or failed or "
+                       "denied) if it was sent, or ticket.py result --status unsent if it was not"
+                       % (rec.get("at"), rec.get("symbol") or order.get("symbol"))), rv
     if rec:
         st = rec.get("status")
         if st == "approved":
             stale = risk_stale(risk, rv, order, now)
             if stale:  # a yes left open past the PASS is no yes: same overnight hold, second door
-                return False, ("EXPIRED: your yes at %s no longer holds (%s). Do not place it; run "
-                               "check.py again, then ask for a new yes" % (rec.get("at"), stale)), rv
+                return False, ("EXPIRED: your yes at %s no longer holds (%s). Do not place it; record "
+                               "ticket.py result --status unsent (or what really happened), run check.py "
+                               "again, then ask for a new yes" % (rec.get("at"), stale)), rv
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
     stale = risk_stale(risk, rv, order, now)
     if stale:
-        return False, "NOT READY: " + stale + older, rv
+        return False, "NOT READY: " + stale, rv
     if not risk.get("check_id"):  # no id, no way to bind a yes to this check
         return False, ("NOT READY: the risk check is from an older trader-risk with no check id; "
-                       "run check.py again" + older), rv
-    return True, "READY: trader-risk PASS, waiting for your yes" + older, rv
+                       "run check.py again"), rv
+    return True, "READY: trader-risk PASS, waiting for your yes", rv
 
 
 def kind_of(order, rv):
@@ -609,6 +617,8 @@ def cmd_result(a):
     state["orders"].append(new)
     write_json(a.state, state)
     print("Recorded order %d as %s." % (a.index, a.status))
+    if a.status == "unsent":
+        print("Nothing was sent. Run check.py again; a fresh PASS makes it READY for a new yes.")
     if a.status == "placed" and a.filled_qty and a.filled_price:
         apply_fill(a.portfolio, cfg, rec["symbol"], rec["side"], a.filled_qty, a.filled_price, today)
         log_fill(a.state, now, today, rec["symbol"], rec["side"], a.filled_qty, a.filled_price)
@@ -692,6 +702,8 @@ def cmd_log(a):
         reply = (' reply "%s"' % r["reply"]) if r.get("reply") and r["status"] in ("approved", "declined") else ""
         loss = (" max loss %s" % _money(r["max_loss"])) if r.get("max_loss") is not None and r["status"] == "placed" else ""
         idx = ("#%s" % r["index"]) if r.get("index") is not None else "  "
+        if r.get("status") == "unsent":
+            extra += " (never sent; the yes no longer counts)"
         print("%s  %s %-9s %s%s%s%s" % (r.get("at"), idx, r.get("status"), r.get("plain"), reply, loss, extra))
     placed = sum(1 for r in rows if r.get("status") == "placed")
     print("%d placed%s." % (placed, "" if a.all else " today"))
@@ -728,7 +740,7 @@ def main(argv=None):
     p = sub.add_parser("result", help="record what happened after the Allow once / Deny card")
     common(p)
     p.add_argument("--index", type=int, required=True)
-    p.add_argument("--status", required=True, choices=["placed", "denied", "failed"])
+    p.add_argument("--status", required=True, choices=["placed", "denied", "failed", "unsent"])
     p.add_argument("--broker-id")
     p.add_argument("--note")
     p.add_argument("--filled-qty")
