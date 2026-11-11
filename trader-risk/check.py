@@ -225,6 +225,14 @@ def market_closed(now_et):
     return []
 
 
+def calendar_warning(d):
+    """A warning when the NYSE holiday list does not cover d's year, else None."""
+    if d.year in CALENDAR_YEARS:
+        return None
+    return ("the holiday list covers %s only: check nyse.com for %s"
+            % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat()))
+
+
 def window_off(c):
     return (hhmm(c.get("no_entries_before"), "no_entries_before") is None
             and hhmm(c.get("no_entries_after"), "no_entries_after") is None)
@@ -239,9 +247,8 @@ def window_check(now_et, c):
         return [], []
     warns = []
     d, t = now_et.date(), now_et.time().replace(second=0, microsecond=0)
-    if d.year not in CALENDAR_YEARS:
-        warns.append("the holiday list covers %s only: check nyse.com for %s"
-                     % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat()))
+    if calendar_warning(d):
+        warns.append(calendar_warning(d))
     closed = market_closed(now_et)
     if closed:
         return closed, warns
@@ -437,6 +444,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_et, c)
     closed_now = market_closed(now_et) if window_off(c) else []  # the owner's rule: still no plain day entry
+    closed_warn = calendar_warning(now_et.date()) if window_off(c) else None  # closed_now leans on the list too
     pdt_n, pdt_list = day_trades(state, today) if c.get("pdt_guard") else (0, [])
     seen = set()
     results = []
@@ -463,7 +471,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         side = str(o.get("side", "")).strip().lower()
         typ = str(o.get("type", "market")).strip().lower()
         tif = str(o.get("time_in_force", "day")).strip().lower()
-        plain_day = tif == "day" and not o.get("extended_hours")
+        ext = o.get("extended_hours")
+        plain_day = tif == "day" and ext is not True
         qty, notional = o.get("qty"), o.get("notional")
         plan = o.get("plan") if isinstance(o.get("plan"), dict) else {}
         oc = str(o.get("order_class") or "").strip().lower()
@@ -496,7 +505,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             reasons.append("format: a %s order needs a limit_price" % typ)
         if typ in ("stop", "stop_limit") and o.get("stop_price") is None:
             reasons.append("format: a %s order needs a stop_price" % typ)
-        if o.get("extended_hours") and not (typ == "limit" and tif in ("day", "gtc")):
+        if not (ext is None or ext is True or ext is False):
+            reasons.append("format: extended_hours must be true or false, got %r" % (ext,))
+        if ext is True and not (typ == "limit" and tif in ("day", "gtc")):
             reasons.append("format: extended hours needs a limit order with time_in_force day or gtc")
         if o.get("stop_loss_limit_price") is not None and o.get("stop_loss_stop_price") is None:
             reasons.append("format: stop_loss_limit_price needs a stop_loss_stop_price")
@@ -668,6 +679,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             later.extend(win_reasons)
             if plain_day:
                 later.extend(closed_now)
+                if closed_warn and closed_warn not in top_warn:
+                    top_warn.append(closed_warn)
             if c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"
@@ -848,6 +861,7 @@ def main(argv=None):
             rec = dict(res)
             rec["checked_at"] = datetime.datetime.now(datetime.timezone.utc).replace(
                 microsecond=0, tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
+            rec["check_id"] = os.urandom(8).hex()  # trader-broker binds each yes to this check
             rec["orders_file"] = a.orders
             tmp = a.out + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:

@@ -149,13 +149,17 @@ that draft orders to Needs approval too.
    stock or amount). Ask again. Never turn a reply into a yes yourself.
 4. Only after "Recorded your yes", call `place_stock_order` with exactly the
    JSON the ticket printed. Claude's card appears: Allow once or Deny.
-   A yes expires with its risk PASS. If `show` says EXPIRED (the card was left
-   open, or the session stopped), do not place it: record `ticket.py result
-   --index N --status failed --note expired`.
+   A yes expires with its risk PASS, and counts only on the check it was given
+   on. If `show` says EXPIRED (the card was left open, or the session
+   stopped), do not place it: run `/trader-risk` again and ask for a new yes.
+   After a new check the old yes no longer counts, so the ticket is READY
+   again and needs a new yes. Record nothing for the expired one.
 5. Record what happened: `ticket.py result --index N --status placed
    --broker-id <id> --filled-qty Q --filled-price P` (the fill from the
    response or `get_open_position`), or `--status denied`, or `--status failed`
-   with `--note`. A failed order is not retried without a new check and a new yes.
+   with `--note`. A failed order stays failed for the rest of the day and is
+   not sent again: the broker may still hold it, so check its open orders
+   before you trade that symbol again.
    The log keeps the entry's max loss for trader-risk's daily limit.
 
 ## Steps: while it is open, and out by the close

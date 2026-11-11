@@ -368,19 +368,27 @@ def status_of(order, risk, state, today, now):
     if rv.get("verdict") != "PASS":
         return False, "BLOCKED by trader-risk: " + "; ".join(rv.get("reasons", [])), rv
     rec = latest(state, fp, today)
+    older = ""
+    if rec and rec.get("status") == "approved" and (not risk.get("check_id")
+                                                    or rec.get("risk_check") != risk.get("check_id")):
+        # a yes counts only on the check it was given on: a new check never revives it (R5)
+        older, rec = " (your yes at %s was on an earlier check and no longer counts)" % rec.get("at"), None
     if rec:
         st = rec.get("status")
         if st == "approved":
             stale = risk_stale(risk, rv, order, now)
             if stale:  # a yes left open past the PASS is no yes: same overnight hold, second door
-                return False, ("EXPIRED: your yes at %s no longer holds (%s). Do not place it; record "
-                               "ticket.py result --status failed --note expired" % (rec.get("at"), stale)), rv
+                return False, ("EXPIRED: your yes at %s no longer holds (%s). Do not place it; run "
+                               "check.py again, then ask for a new yes" % (rec.get("at"), stale)), rv
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
     stale = risk_stale(risk, rv, order, now)
     if stale:
-        return False, "NOT READY: " + stale, rv
-    return True, "READY: trader-risk PASS, waiting for your yes", rv
+        return False, "NOT READY: " + stale + older, rv
+    if not risk.get("check_id"):  # no id, no way to bind a yes to this check
+        return False, ("NOT READY: the risk check is from an older trader-risk with no check id; "
+                       "run check.py again" + older), rv
+    return True, "READY: trader-risk PASS, waiting for your yes" + older, rv
 
 
 def kind_of(order, rv):
@@ -555,6 +563,7 @@ def cmd_approve(a):
            "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
            "qty": order.get("qty"), "kind": kind_of(order, rv), "max_loss": loss, "stop": stop,
            "plain": plain(order), "status": "approved", "reply": a.reply,
+           "risk_check": risk.get("check_id"),
            "paper": bool(cfg.get("paper", True)), "broker": cfg.get("broker", "alpaca")}
     state.setdefault("orders", []).append(rec)
     write_json(a.state, state)

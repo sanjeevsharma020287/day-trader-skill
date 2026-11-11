@@ -261,6 +261,23 @@ class DayTradeChecks(unittest.TestCase):
         res = check.check([ext], v1(), prices=PRICES, now=at("2026-10-19 17:30"))
         self.assertEqual(verdicts(res), ["PASS"])
         self.assertIsNone(res["results"][0]["entries_until"])
+        # Fable R6: only a real true is extended hours; "false", 1, "true" fail closed
+        for bad in ("false", "true", 1, 0, "yes"):
+            res = check.check([dict(ext, extended_hours=bad)], v1(), prices=PRICES, now=at("2026-10-19 17:30"))
+            self.assertEqual(verdicts(res), ["BLOCK"], bad)
+            self.assertIn("format: extended_hours must be true or false, got %r" % (bad,), reasons(res))
+            self.assertEqual(res["results"][0]["entries_until"], "15:59", bad)  # treated as plain day, not extended
+        res = check.check([dict(ext, extended_hours=False)], v1(), prices=PRICES, now=at("2026-10-19 17:30"))
+        self.assertIn("window: the market is closed", reasons(res))  # false is a plain day entry
+        # Fable R7: with the window off a plain day entry still leans on the holiday list, so it warns
+        cal = "the holiday list covers 2026 and 2027 only: check nyse.com for 2028-03-15"
+        res = check.check([tsla()], cfg(**off), now=at("2028-03-15 10:15"))
+        self.assertIn(cal, res["warnings"])
+        self.assertEqual(res["warnings"].count(cal), 1)
+        res = check.check([tsla(), tsla(symbol="AMD")], cfg(**off), now=at("2028-03-15 10:15"))
+        self.assertEqual(res["warnings"].count(cal), 1)  # once, not per order
+        res = check.check([tsla(time_in_force="gtc")], cfg(**off), now=at("2028-03-15 10:15"))
+        self.assertNotIn(cal, res["warnings"])  # a gtc entry does not use the list
         with self.assertRaises(check.RiskError):
             self.one(tsla(), no_entries_before="9.45am")
 
