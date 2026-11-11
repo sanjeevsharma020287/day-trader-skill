@@ -246,6 +246,19 @@ class DayTradeChecks(unittest.TestCase):
         with self.assertRaises(check.RiskError):
             self.one(tsla(), no_entries_before="9.45am")
 
+    def test_entries_until_is_the_last_minute_for_a_yes(self):
+        cases = [("2026-10-19 10:15", {}, "15:30"),
+                 ("2026-11-27 10:15", {}, "12:30"),                                   # early close
+                 ("2026-10-19 10:15", {"no_entries_after": None}, "15:59"),
+                 ("2026-11-27 10:15", {"no_entries_after": None}, "12:59"),
+                 ("2026-10-19 10:15", {"no_entries_after": "16:30"}, "15:59"),         # never past the close
+                 ("2026-10-17 10:15", {}, ""),                                        # weekend
+                 ("2026-11-26 10:15", {}, ""),                                        # holiday
+                 ("2026-10-17 10:15", {"no_entries_before": None, "no_entries_after": None}, None)]
+        for now, over, want in cases:
+            res = check.check([tsla()], cfg(**over), now=at(now))
+            self.assertEqual(res["entries_until"], want, (now, over))
+
     def test_the_window_uses_new_york_time_not_the_machine(self):
         self.assertEqual(check.to_eastern(at("2026-10-19 10:15")), datetime.datetime(2026, 10, 19, 10, 15))
         self.assertEqual(at("2026-10-19 10:15"), datetime.datetime(2026, 10, 19, 14, 15))

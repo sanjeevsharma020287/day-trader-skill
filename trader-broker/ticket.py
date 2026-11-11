@@ -51,6 +51,7 @@ TIF_WORDS = {"day": "good for today", "gtc": "good until canceled", "opg": "at t
              "cls": "at the close", "ioc": "immediate or cancel", "fok": "fill or kill"}
 YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
+RISK_MAX_AGE_MIN = 15  # a PASS older than this is stale: prices and the window move on
 DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
                "hold", "unless", "if"}
 
@@ -323,7 +324,38 @@ def risk_verdict(risk, fp, today):
     return None, "this exact order was not in the last risk check (it changed or is new); run check.py again"
 
 
-def status_of(order, risk, state, today):
+def risk_stale(risk, rv, order, now):
+    """Why a PASS can no longer be used at `now` (naive UTC), or None.
+
+    The verdict holds only for RISK_MAX_AGE_MIN minutes, and an entry only until
+    the risk check's entries_until (the window or the close, New York time). A PASS
+    at 15:29 must not turn into a yes at 16:30, which would queue a day order for
+    the next open: the overnight hold the pack forbids."""
+    now_et = to_eastern(now).replace(second=0, microsecond=0)
+    try:
+        checked = datetime.datetime.strptime(str(risk.get("now_new_york")), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return "the risk check has no time on it; run check.py again"
+    age = (now_et - checked).total_seconds() / 60
+    if age < 0:
+        return ("the risk check is timed %s New York, after now (%s); run check.py again"
+                % (checked.strftime("%H:%M"), now_et.strftime("%H:%M")))
+    if age > RISK_MAX_AGE_MIN:
+        return ("the risk check is %d minutes old (from %s New York; it holds %d); run check.py again"
+                % (age, checked.strftime("%H:%M"), RISK_MAX_AGE_MIN))
+    if kind_of(order, rv) == "entry":
+        if "entries_until" not in risk:
+            return "the risk check is from an older trader-risk with no entry cut-off; run check.py again"
+        until = risk.get("entries_until")  # None: the window is off in the config
+        if until == "":
+            return "the market is closed today; no new entries"
+        if until is not None and now_et.strftime("%H:%M") > str(until):
+            return ("no new entries after %s New York today (it is %s)"
+                    % (until, now_et.strftime("%H:%M")))
+    return None
+
+
+def status_of(order, risk, state, today, now):
     """(ready, label, risk_result)"""
     fp = fingerprint(order)
     rv, why = risk_verdict(risk, fp, today)
@@ -337,6 +369,9 @@ def status_of(order, risk, state, today):
         if st == "approved":
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
+    stale = risk_stale(risk, rv, order, now)
+    if stale:
+        return False, "NOT READY: " + stale, rv
     return True, "READY: trader-risk PASS, waiting for your yes", rv
 
 
@@ -349,8 +384,8 @@ def kind_of(order, rv):
 
 # ---------------------------------------------------------------- rendering
 
-def render(order, idx, total, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
+def render(order, idx, total, cfg, risk, state, today, now):
+    ready, label, rv = status_of(order, risk, state, today, now)
     broker = str(cfg.get("broker", "alpaca")).lower()
     paper = cfg.get("paper", True)
     acct = "PAPER account" if paper else "LIVE ACCOUNT, REAL MONEY"
@@ -379,8 +414,8 @@ def render(order, idx, total, cfg, risk, state, today):
     return "\n".join(lines), ready
 
 
-def ticket_json(order, idx, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
+def ticket_json(order, idx, cfg, risk, state, today, now):
+    ready, label, rv = status_of(order, risk, state, today, now)
     loss, stop = max_loss(order)
     return {"index": idx, "ready": ready, "status": label, "plain": plain(order),
             "fingerprint": fingerprint(order), "paper": bool(cfg.get("paper", True)),
@@ -483,12 +518,12 @@ def cmd_show(a):
     orders, cfg, risk, state, today, now = _load(a)
     picks = [(a.index, _pick(orders, a.index))] if a.index else list(enumerate(orders, 1))
     if a.json:
-        out = [ticket_json(o, i, cfg, risk, state, today) for i, o in picks]
+        out = [ticket_json(o, i, cfg, risk, state, today, now) for i, o in picks]
         print(json.dumps(out[0] if a.index else out, indent=2))
         return 0 if any(t["ready"] for t in out) else 1
     blocks, any_ready = [], False
     for i, o in picks:
-        text, ready = render(o, i, len(orders), cfg, risk, state, today)
+        text, ready = render(o, i, len(orders), cfg, risk, state, today, now)
         blocks.append(text)
         any_ready = any_ready or ready
     print("\n\n".join(blocks))
@@ -500,7 +535,7 @@ def cmd_show(a):
 def cmd_approve(a):
     orders, cfg, risk, state, today, now = _load(a)
     order = _pick(orders, a.index)
-    ready, label, rv = status_of(order, risk, state, today)
+    ready, label, rv = status_of(order, risk, state, today, now)
     if not ready:
         raise TicketError("order %d is not ready: %s" % (a.index, label))
     ok, why = parse_yes(a.reply, order, [o.get("symbol", "") for o in orders])

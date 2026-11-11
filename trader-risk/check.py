@@ -242,6 +242,28 @@ def window_check(now_et, c):
     return [], warns
 
 
+def entries_until(now_et, c):
+    """The last New York minute ("HH:MM") an entry may still be approved today.
+
+    trader-broker refuses an entry's yes after it, so a PASS from before the cut-off
+    cannot become an order once the window or the session has closed. None when both
+    no_entries_* are null (the window is off, e.g. for extended-hours orders); "" when
+    the market is closed all day."""
+    before = hhmm(c.get("no_entries_before"), "no_entries_before")
+    after = hhmm(c.get("no_entries_after"), "no_entries_after")
+    if before is None and after is None:
+        return None
+    d = now_et.date()
+    if not trading_day(d)[0]:
+        return ""
+    early = d.isoformat() in NYSE_EARLY_CLOSE
+    close = EARLY if early else CLOSE
+    last = (datetime.datetime.combine(d, close) - datetime.timedelta(minutes=1)).time()
+    if after is not None:
+        last = min(last, _shift(after, 3) if early else after)
+    return last.strftime("%H:%M")
+
+
 def business_days(today, n=5):
     """The last n NYSE trading days up to and including today, newest first."""
     out, d = [], today
@@ -694,6 +716,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     return {
         "date": today,
         "now_new_york": now_et.strftime("%Y-%m-%d %H:%M"),
+        "entries_until": entries_until(now_et, c),
         "paper": bool(c.get("paper", True)),
         "results": results,
         "pass": sum(1 for r in results if r["verdict"] == "PASS"),

@@ -251,6 +251,73 @@ class Flow(unittest.TestCase):
         code, text, _ = run(self.args("show", "--index", "1"))
         self.assertIn("not today", text)
 
+    def risk_doc(self, **change):
+        with open(self.risk) as fh:
+            doc = json.load(fh)
+        for k, v in change.items():
+            if v is None:
+                doc.pop(k, None)
+            else:
+                doc[k] = v
+        with open(self.risk, "w") as fh:
+            json.dump(doc, fh)
+
+    def test_a_pass_holds_for_15_minutes(self):
+        self.assertEqual(self.run_risk(), 0)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:30"))
+        self.assertEqual(code, 0)
+        self.assertIn("READY: trader-risk PASS", text)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
+        self.assertEqual(code, 1)
+        self.assertIn("NOT READY: the risk check is 16 minutes old (from 10:15 New York; it holds 15)", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:31"))
+        self.assertEqual(code, 1)
+        self.assertIn("16 minutes old", err)
+        self.assertFalse(os.path.exists(self.state))
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:14"))
+        self.assertIn("NOT READY: the risk check is timed 10:15 New York, after now (10:14)", text)
+
+    def test_a_pass_before_the_cutoff_is_no_yes_after_it(self):
+        # the review's case: PASS at 15:29, then a yes after the window or the close
+        self.assertEqual(self.run_risk(now="2026-10-19 15:29"), 0)
+        with open(self.risk) as fh:
+            self.assertEqual(json.load(fh)["entries_until"], "15:30")
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:30"))
+        self.assertIn("READY: trader-risk PASS", text)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:31"))
+        self.assertIn("NOT READY: no new entries after 15:30 New York today (it is 15:31)", text)
+        for late in ("2026-10-19 15:31", "2026-10-19 16:30"):
+            code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now=late))
+            self.assertEqual(code, 1, late)
+            self.assertIn("not ready", err)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_the_cutoff_follows_the_risk_check(self):
+        self.run_risk()
+        self.risk_doc(entries_until="")
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("NOT READY: the market is closed today", text)
+        self.risk_doc(entries_until=None)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("NOT READY: the risk check is from an older trader-risk", text)
+        self.risk_doc(now_new_york=None, entries_until="15:30")
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("NOT READY: the risk check has no time on it", text)
+
+    def test_window_off_keeps_only_the_15_minutes(self):
+        with open(self.cfg) as fh:
+            c = json.load(fh)
+        c.update(no_entries_before=None, no_entries_after=None)
+        with open(self.cfg, "w") as fh:
+            json.dump(c, fh)
+        self.assertEqual(self.run_risk(now="2026-10-19 15:50"), 0)
+        with open(self.risk) as fh:
+            self.assertIsNone(json.load(fh)["entries_until"])
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:55"))
+        self.assertIn("READY: trader-risk PASS", text)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:06"))
+        self.assertIn("16 minutes old", text)
+
     def test_blocked_orders_are_never_ready(self):
         self.assertEqual(self.run_risk(now="2026-10-19 09:40"), 1)
         code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 09:40"))

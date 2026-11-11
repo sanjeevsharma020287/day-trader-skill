@@ -23,7 +23,9 @@ The Order Executor is the only skill in this pack that can lead to a real
 order, so it is the strictest. An order reaches the market only after three
 separate gates, every time, for every order:
 
-1. **trader-risk passed this exact order today** (matched by fingerprint).
+1. **trader-risk passed this exact order in the last 15 minutes** (matched by
+   fingerprint), and for an entry, the window or the session has not closed
+   since: a PASS at 15:29 is no yes at 15:31.
 2. **The user typed an explicit yes for this one order** in the chat.
 3. **The user clicked Allow once** on Claude's own permission card, which
    appears because the order tool is set to "Needs approval".
@@ -50,7 +52,7 @@ is a real yes for that order, builds the flatten ticket, and keeps the log in
 | file | what |
 | --- | --- |
 | `trader/orders.json` | the proposed orders (trader-budget writes it; `flatten` replaces it) |
-| `trader/state/risk.json` | trader-risk's verdicts; only a PASS from today is READY |
+| `trader/state/risk.json` | trader-risk's verdicts; only a PASS under 15 minutes old (and, for an entry, before its `entries_until`) is READY |
 | `trader/state/broker.json` | every yes, no, placed, failed and filled, with each entry's max loss |
 | `trader/portfolio.json` | cash and shares, updated by `fill` and by `result --filled-qty` |
 | `trader/plan.json` | the flat-by time for `flatten` |
@@ -205,7 +207,7 @@ buttons: Allow once, Deny. Allow once sends it to the paper account. The
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
 - Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
 - Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
+  passed that exact order in the last 15 minutes, the user typed an explicit yes for that one order in the chat, and the
   user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
   (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
 - No options, margin, short selling or leverage unless the config allows it and the user confirms.

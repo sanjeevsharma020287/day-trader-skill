@@ -90,7 +90,10 @@ How the numbers work:
 - **The window** is New York time, worked out in the tool (daylight saving
   included), never from the computer's clock zone. Weekends and NYSE holidays
   are closed. On a 1:00 p.m. early close the window ends 3 hours earlier too.
-  Set both `no_entries_*` to null to switch the window off.
+  Set both `no_entries_*` to null to switch the window off; that also lifts
+  the closed-market block (for extended-hours or good-until-canceled orders).
+  `risk.json` records `entries_until`, the last New York minute an entry may
+  still be approved, and trader-broker refuses any PASS older than 15 minutes.
 - **pdt_guard** (off by default) counts a day trade as a symbol bought and
   sold on the same day in the log, plus any entry placed today (it is meant
   to be flat by the close). FINRA removed the $25,000 pattern-day-trader
@@ -165,7 +168,7 @@ treats a PASS as the user's yes.
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
 - Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
 - Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
+  passed that exact order in the last 15 minutes, the user typed an explicit yes for that one order in the chat, and the
   user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
   (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
 - No options, margin, short selling or leverage unless the config allows it and the user confirms.
