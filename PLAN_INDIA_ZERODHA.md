@@ -294,7 +294,7 @@ Connect plan or a wider band on a delayed price).
 
 ```
 1. py trader-broker/closer.py precheck        # hook registered [R7]; IST now in [15:00, 15:25) (F&O list: [15:00, 15:10) [R8]); trading day; else "nothing to do: <why>"
-2. get_orders  -> closer.py cancels           # every open or part-filled BUY this pack placed today [R1], and this pack's open SL stops
+2. get_orders  -> closer.py cancels           # writes trader/close-cancels.json [R13]: every open or part-filled BUY this pack placed today [R1], and this pack's open SL stops
    for each cancel line: cancel_order
 3. get_orders, get_positions AGAIN [R3]       # read only after the cancels; Claude saves raw JSON to trader/kite/{orders,positions}.json
 4. py trader-broker/closer.py plan            # writes trader/close-plan.json (+ check id, written_at), sells from the re-read only
@@ -314,7 +314,10 @@ Connect plan or a wider band on a delayed price).
   * net long quantity greater than 0 in `positions.json`;
   * **opened by this pack, by the broker's own record [R5]:** `ticket.py result
     --status placed` stores the Kite `order_id`, and every order the pack places
-    carries the `tag` `trader-pack`. A plan line needs a broker-log entry whose
+    carries the `tag` `traderpack` [R12: alphanumeric, as Kite's tag may refuse
+    a hyphen; B0 confirms that `place_order` takes a tag, that `get_orders`
+    returns it, and which characters pass. If no tag is possible, R5 rests on
+    the stored `order_id` alone, and the B0 notes say so]. A plan line needs a broker-log entry whose
     `order_id` is a **COMPLETE BUY** with that tag in today's `orders.json`. The
     log alone is not enough.
 * **Quantity** = min(net long held, filled quantity of those COMPLETE BUYs).
@@ -355,9 +358,13 @@ the reason on stderr) unless one of these holds:
   the exit's `place_order`, and ticket.py refuses the exit ticket if the file is
   missing or old. An exit ticket **cancels the stop first** (its cancel line
   comes before its sell), so the stop cannot later fire and open a short.
-* **A `cancel_order`:** the `order_id` is in `close-plan.json`'s cancel lines
-  (a resting entry BUY [R1] or a stop), or is the stop of an approved exit
-  ticket.
+* **A `cancel_order`:** the `order_id` is in a cancel line of
+  `trader/close-cancels.json` (a resting entry BUY [R1] or a stop), or is the
+  stop of an approved exit ticket. **[R13]** §5.2 step 2 runs before step 4
+  writes `close-plan.json`, so step 2 has its own file: `closer.py cancels`
+  writes `trader/close-cancels.json` with a check id and `written_at`, under
+  the same rules as the plan (today, under 5 minutes old, IST in the close
+  window, each line used once and marked used by the guard). B4 builds it.
 * **`modify_order`:** always blocked (nothing in the pack modifies).
 * **Dry run (§9 decision 1):** while `dry_run` is true in the broker config,
   **every** `place_order` exits 2, whatever it is.
@@ -439,6 +446,11 @@ B0 waits on the owner.
 * One branch, `feat/india-zerodha`, carries B1 to B7, with one review packet
   per batch. It is merged to `main` **once**, on Fable's full approval of B7,
   so `main` is never half-converted.
+* **Carried from B1's review:** R11 lands in B2: `nse_trading_day` must not
+  fail open on a `datetime` (its `isoformat()` key misses both tables). Build
+  the key from year, month and day, or raise; tested on a holiday and a special
+  session in every copy, with a mutant. R12 lands in B0 (§5.2) and R13 in B4
+  (§5.3).
 * B2 to B4 wait for Fable's ruling on the B0 notes. B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].
