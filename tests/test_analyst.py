@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -135,6 +136,25 @@ class Cli(unittest.TestCase):
         self.assertEqual(rows["KO"]["period_end"], "2026-04-03")
         self.assertIn("wrote", out)
         self.assertNotIn(chr(0x2014), out)
+
+    def test_a_corrupt_file_is_an_error_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "metrics.json")
+            for bad in ("{", "[]", '{"companies": [{"eps": 1}]}'):
+                with open(path, "w") as fh:
+                    fh.write(bad)
+                code, out, err = run(["AAPL", "--offline", DIR, "--metrics", path])
+                self.assertEqual(code, 2, bad)
+                self.assertIn("is not a metrics file", err)
+                with open(path) as fh:
+                    self.assertEqual(fh.read(), bad)  # not overwritten
+            off = os.path.join(tmp, "offline")
+            shutil.copytree(DIR, off)
+            with open(os.path.join(off, "companyfacts-CIK0000320193.json"), "w") as fh:
+                fh.write("{")
+            code, _, err = run(["AAPL", "--offline", off])
+            self.assertEqual(code, 2)
+            self.assertIn("companyfacts-CIK0000320193.json is not valid JSON", err)
 
     def test_unknown_ticker_and_no_user_agent(self):
         code, _, err = run(["ZZZZ", "--offline", DIR])

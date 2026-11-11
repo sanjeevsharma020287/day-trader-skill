@@ -84,6 +84,9 @@ alerts: stop, target, flat by the close                                       (w
 news / analyst / pelosi                                                        (on a schedule)
 ```
 
+`trader/` holds your portfolio, your broker decision log and `trader/config.json` (with your
+name and email for the SEC). Add `trader/` to your project's `.gitignore` so none of it is committed.
+
 An example, the trade in the reel: Tesla, Monday October 19 2026, real data.
 
 1. **`/trader-scanner`** at 10:15 AM ET: of the 231 charts in the reel's

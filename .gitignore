@@ -1,0 +1,7 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Your own trading data, if you run the skills from this folder: portfolio,
+# broker decision log, and config.json with your name and email for the SEC.
+trader/

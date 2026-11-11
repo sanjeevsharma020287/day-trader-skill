@@ -89,6 +89,21 @@ class NewSinceLastCheck(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Nothing new", out)
 
+    def test_a_corrupt_file_is_an_error_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.json")
+            with open(bad, "w") as fh:
+                fh.write("{")
+            code, _, err = run(["new", "--member", "pelosi", "--offline", ZIP, "--year", "2026",
+                                "--state", bad, "--portfolio", os.path.join(tmp, "none.json"),
+                                "--today", "2026-10-13"])
+            self.assertEqual(code, 2)
+            self.assertIn("ptr: %s is not valid JSON" % bad, err)
+            path = os.path.join(DIR, "ptr-20035143.txt")
+            code, _, err = run(["parse", path, "--portfolio", bad])
+            self.assertEqual(code, 2)
+            self.assertIn("ptr: %s is not valid JSON" % bad, err)
+
     def test_a_new_doc_id_is_new(self):
         rows = ptr.select(ptr.load_index(2026, offline=ZIP), ["pelosi"])
         state = {"seen": ["20033725", "20034836", "20035553"], "last_check": "2026-08-01T09:00:00"}

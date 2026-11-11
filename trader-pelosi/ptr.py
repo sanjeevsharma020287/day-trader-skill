@@ -163,10 +163,17 @@ def select(rows, members=None, kind="P", since=None):
 
 # ---------------------------------------------------------------- state
 
-def load_state(path):
-    if path and os.path.isfile(path):
+def read_json(path):
+    try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
+    except ValueError as exc:
+        raise PtrError("%s is not valid JSON: %s" % (path, exc))
+
+
+def load_state(path):
+    if path and os.path.isfile(path):
+        return read_json(path)
     return {"seen": [], "last_check": None}
 
 
@@ -351,10 +358,9 @@ def watchlist(args):
     tickers = {t.upper() for t in (args.tickers or [])}
     path = getattr(args, "portfolio", None)
     if path and os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            for p in json.load(fh).get("positions", []):
-                if p.get("ticker"):
-                    tickers.add(p["ticker"].upper())
+        for p in (read_json(path) or {}).get("positions", []):
+            if p.get("ticker"):
+                tickers.add(p["ticker"].upper())
     return tickers
 
 

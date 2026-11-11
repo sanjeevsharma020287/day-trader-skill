@@ -196,6 +196,30 @@ class Check(unittest.TestCase):
         for t in ("halt", "regulatory", "macro"):
             self.assertIn(t, tags)
 
+    def test_a_short_window_hides_nothing_else(self):
+        # one --hours 3 run must not mark the rest of the last 24 hours as seen
+        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "3", "--json", "--no-moves"] + self.base)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(out)["items"]), 1)
+        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "24", "--json", "--no-moves"] + self.base)
+        self.assertEqual(code, 0, err)
+        items = json.loads(out)["items"]
+        self.assertEqual(len(items), 9)
+        self.assertTrue(all(i["new"] for i in items))
+
+    def test_a_bad_now_or_file_is_an_error_not_a_crash(self):
+        code, out, err = run(["--tickers", "AAPL", "--offline", DIR, "--state", self.state, "--now", "soon"])
+        self.assertEqual(code, 2)
+        self.assertIn("news: --now wants an ISO time", err)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as fh:
+            fh.write('{"seen": ')
+        code, out, err = run(["--tickers", "AAPL", "--no-moves"] + self.base)
+        self.assertEqual(code, 2)
+        self.assertIn("news: %s is not valid JSON" % self.state, err)
+        with open(self.state) as fh:
+            self.assertEqual(fh.read(), '{"seen": ')  # left as it was
+
     def test_state_forgets_after_30_days(self):
         state = {"seen": {"old": "2026-08-01T00:00:00+00:00"}}
         now = news.parse_time(NOW)

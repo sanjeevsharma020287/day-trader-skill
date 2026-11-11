@@ -103,9 +103,22 @@ class Quotes(unittest.TestCase):
             q = alerts.parse_stooq(fh.read(), "AAPL")
         self.assertEqual(q["price"], 341.27)
         self.assertEqual(q["open"], 344.67)
+        # Stooq's clock is Warsaw time: 22:00:09 CEST is the 16:00 New York close, 20:00:09 UTC
+        self.assertEqual(q["time"], "2026-10-13T20:00:09Z")
         with open(os.path.join(QDIR, "stooq-ZZZZ.csv")) as fh:
             with self.assertRaises(alerts.AlertError):
                 alerts.parse_stooq(fh.read(), "ZZZZ")
+
+    def test_warsaw_time_to_utc(self):
+        for local, utc in (("2026-01-15 22:00:00", "2026-01-15T21:00:00Z"),   # winter, UTC+1
+                           ("2026-07-15 22:00:00", "2026-07-15T20:00:00Z"),   # summer, UTC+2
+                           ("2026-03-29 01:59:00", "2026-03-29T00:59:00Z"),   # last minute of winter
+                           ("2026-03-29 03:00:00", "2026-03-29T01:00:00Z"),   # first of summer
+                           ("2026-10-25 03:30:00", "2026-10-25T02:30:00Z"),   # winter again
+                           ("2027-03-28 03:00:00", "2027-03-28T01:00:00Z")):  # 2027's last Sunday
+            self.assertEqual(alerts.stooq_time(*local.split()), utc, local)
+        self.assertEqual(alerts.stooq_time("N/D", "N/D"), "")
+        self.assertEqual(alerts._last_sunday(2026, 12), datetime.date(2026, 12, 27))
 
     def test_urls_and_user_agent(self):
         self.assertEqual(alerts.UA, UA)

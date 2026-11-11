@@ -36,7 +36,9 @@ Quotes (free, delayed, unofficial; for alerts only, never for timing an order):
           query1 on a 429 or a 5xx; one retry with a pause on a 429; one
           request per ticker, half a second apart; the default)
   stooq   https://stooq.com/q/l/?s=tsla.us&f=sd2t2ohlcv&h&e=csv (Stooq's free
-          CSV; it answered 404 on 2026-10-13, kept for when it is back)
+          CSV; it answered 404 on 2026-10-13, kept for when it is back. Its
+          Date/Time are Warsaw time: the 16:00 New York close reads 22:00 in
+          summer. They are turned into UTC like Yahoo's)
   --offline DIR reads DIR/<source>-<TICKER>.json|csv (or .json.gz) instead.
 
 NYSE calendar: the 2026 and 2027 holidays and 1:00 p.m. early closes as
@@ -193,6 +195,31 @@ def market_status(now_utc):
 
 # ---------------------------------------------------------------- quotes
 
+def _last_sunday(year, month):
+    d = datetime.date(year + month // 12, month % 12 + 1, 1) - datetime.timedelta(days=1)
+    return d - datetime.timedelta(days=(d.weekday() + 1) % 7)
+
+
+def warsaw_to_utc(local):
+    """Warsaw wall time (Stooq's clock) -> naive UTC. Summer time (UTC+2) runs from 1:00 UTC on the
+    last Sunday of March to 1:00 UTC on the last Sunday of October (EU rule); otherwise UTC+1."""
+    y = local.year
+    start = datetime.datetime.combine(_last_sunday(y, 3), datetime.time(1, 0))
+    end = datetime.datetime.combine(_last_sunday(y, 10), datetime.time(1, 0))
+    utc = local - datetime.timedelta(hours=2)
+    return utc if start <= utc < end else local - datetime.timedelta(hours=1)
+
+
+def stooq_time(date, time_):
+    """"2026-10-13", "22:00:09" (Warsaw) -> "2026-10-13T20:00:09Z", or "" if it cannot be read
+    (the risk and budget tools then fall back to when the quote was fetched)."""
+    try:
+        local = datetime.datetime.strptime("%s %s" % (date, time_), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return ""
+    return warsaw_to_utc(local).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def stooq_url(sym):
     return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
 
@@ -218,7 +245,7 @@ def parse_stooq(text, sym):
         except ValueError:
             return None
     return {"symbol": sym.upper(), "price": float(close), "open": f("open"), "high": f("high"),
-            "low": f("low"), "prev_close": None, "time": ("%s %s" % (r.get("date", ""), r.get("time", ""))).strip(),
+            "low": f("low"), "prev_close": None, "time": stooq_time(r.get("date", ""), r.get("time", "")),
             "source": "stooq"}
 
 

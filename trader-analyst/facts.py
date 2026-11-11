@@ -98,8 +98,11 @@ class Fetcher(object):
             path = os.path.join(self.offline, name)
             if not os.path.isfile(path):
                 raise FactsError("offline: no file %s" % path)
-            with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except ValueError as exc:
+                raise FactsError("%s is not valid JSON: %s" % (path, exc))
         if not self.ua:
             raise FactsError(UA_HELP)
         gap = time.time() - self._last
@@ -527,8 +530,13 @@ def main(argv=None):
     if args.metrics and rows:
         existing = {}
         if os.path.isfile(args.metrics):
-            with open(args.metrics, encoding="utf-8") as fh:
-                existing = {r["ticker"]: r for r in json.load(fh).get("companies", [])}
+            try:
+                with open(args.metrics, encoding="utf-8") as fh:
+                    existing = {r["ticker"]: r for r in json.load(fh).get("companies", [])}
+            except (ValueError, AttributeError, KeyError, TypeError) as exc:
+                print("facts: %s is not a metrics file (%s); left it as it was" % (args.metrics, exc),
+                      file=sys.stderr)
+                return 2
         for r in rows:
             existing[r["ticker"]] = r
         folder = os.path.dirname(args.metrics)

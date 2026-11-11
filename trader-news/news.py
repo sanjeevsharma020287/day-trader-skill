@@ -120,8 +120,11 @@ def to_eastern(utc):
 
 def load_json(path):
     if path and os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except ValueError as exc:
+            raise NewsError("%s is not valid JSON: %s" % (path, exc))
     return None
 
 
@@ -479,6 +482,14 @@ def _json_ready(items):
 
 
 def main(argv=None):
+    try:
+        return _main(argv)
+    except NewsError as exc:
+        print("news: %s" % exc, file=sys.stderr)
+        return 2
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--tickers", nargs="*", help="default: watchlist + plan + portfolio")
     ap.add_argument("--portfolio", default="trader/portfolio.json")
@@ -510,6 +521,8 @@ def main(argv=None):
               "trader/watchlist.json).", file=sys.stderr)
         return 2
     now = parse_time(args.now) if args.now else _dt.datetime.now(_dt.timezone.utc)
+    if now is None:
+        raise NewsError("--now wants an ISO time like 2026-10-19T10:15:00-04:00, not %r" % args.now)
     state = load_json(args.state) or {}
     errors = []
     ua = sec_user_agent(args.user_agent, args.config)
@@ -532,7 +545,7 @@ def main(argv=None):
     else:
         sys.stdout.write(render(shown, errors, now, moves, args.move_pct))
     if not args.dry_run:
-        remember(items, state, now)
+        remember(shown, state, now)  # only what this window showed: a short --hours hides nothing else
         folder = os.path.dirname(args.state)
         if folder:
             os.makedirs(folder, exist_ok=True)
