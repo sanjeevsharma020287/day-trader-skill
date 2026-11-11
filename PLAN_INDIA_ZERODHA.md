@@ -1,7 +1,9 @@
 # Plan: move the pack to NSE on Zerodha
 
-> Status: **plan only, for Fable's ruling.** Branch `plan/india-zerodha` from
-> `main` at `ac9025f`, after the risk-gate merge. This commit contains no code.
+> Status: **approved as the basis by Fable on 2026-11-12, with R1 to R10
+> folded in below** (each marked `[Rn]`). First written on `plan/india-zerodha`
+> at `1259b8c`; carried on `feat/india-zerodha` (R10). B1 may start. B0 needs
+> the owner's own word. B2 to B4 wait for Fable's ruling on the B0 notes.
 > Everything under "Sources" was read on 2026-11-12. Where a fact is
 > secondary or could not be confirmed, the plan says so.
 
@@ -71,6 +73,17 @@ flowchart LR
   `mcp__kite__place_order`, `mcp__kite__cancel_order` and
   `mcp__kite__modify_order`. It applies to **every** session in the project,
   not only the 3 pm one (§5.3).
+* **Where the guard exists [R7]:** only where hooks run, and only under the
+  tool names it matches. The surface is **Claude Code sessions** (the Code tab
+  and its local scheduled tasks) opened on this project folder. The hook is
+  registered in the project's `.claude/settings.json` (from
+  `settings.example.json`, installed by the owner), and the kite MCP server is
+  declared in the project's `.mcp.json` under the server name `kite`, so its
+  tools are exactly `mcp__kite__*`. `claude_desktop_config.json` is the chat
+  app's file and has no hooks, so the pack's setup no longer uses it for the
+  kite server. `closer.py precheck` and `ticket.py` **refuse** when the
+  project settings do not register `guard.py` as a PreToolUse hook for all
+  three tool names.
 
 ## 3. Answers to the seven questions
 
@@ -93,6 +106,11 @@ flowchart LR
 * **Login:** each morning, Claude calls `login` and the user opens the link and
   logs in themselves. The token lasts until 06:00 the next day (F4). Whether
   the server keeps its session across a restart is to be checked in B0.
+* **The API secret [R9]:** the repo's example config holds placeholders only
+  (`KITE_API_KEY=<your key>`, `KITE_API_SECRET=<your secret>`). The real values
+  sit in a file outside the repo that only the server reads. No tool in the
+  pack, no test and no review packet reads, prints or logs it; a `test_repo`
+  check asserts the example has placeholders only.
 
 ### Q2. Square-off, charges, session hours and holidays
 
@@ -212,6 +230,13 @@ Fable rules otherwise:
   * the user says yes once to the pair, and ticket.py shows both;
   * the stop goes in only after the entry shows COMPLETE in `get_orders`, with
     its own Allow once card;
+  * **part fills [R6]:** the stop is for the **filled** quantity, read from
+    `get_orders`. Until the stop is recorded, the ticket shows the position as
+    **UNPROTECTED** with its symbol and quantity;
+  * **entry TTL [R1]:** B0 tests `validity: TTL` on an MIS entry. If it works,
+    each entry carries a TTL that ends by 15:00, so the broker cancels a
+    resting entry even when the 3 pm run does not fire. If it does not, the
+    entry stays `DAY` and §5.2 step 2 cancels it;
   * the target is an **alert** (as the 3:55 flatten is today), and taking it
     is a normal exit with a yes.
 * **(c) Entry only,** with stop and target as alerts. This is rejected: an
@@ -219,6 +244,19 @@ Fable rules otherwise:
 
 Under (b), the stop SELL is an exit, so it is never trapped (D3). The guard
 lets it through only when it matches a held position (§5.3).
+
+### 4.3 Where prices come from [R4]
+
+| Price | Source (proposed) | Open until B0 |
+|---|---|---|
+| Entry LIMIT | Kite `get_ltp` / `get_quotes` through MCP if the Personal plan answers them; otherwise the Yahoo `.NS` last price | Does `get_ltp` work on Personal (F3 says no live data)? |
+| Stop trigger and limit | The exit plan's stop (from bars), the limit one band below, rounded to tick | None: it does not need a live price |
+| 3 pm IOC LIMIT | `last_price` in `get_positions` if B0 shows it is fresh; otherwise `get_ltp`; otherwise Yahoo `.NS` | Is `get_positions.last_price` fresh? How delayed is Yahoo `.NS` against Kite? |
+
+B0 measures the Yahoo `.NS` delay against Kite and whether `get_positions`
+carries a usable `last_price`. **If the free plan gives no fresh price, that
+comes back to Fable and the owner before B2** (the choice is then the ₹500
+Connect plan or a wider band on a delayed price).
 
 ## 5. The 3 pm close without a yes (D3, D4, D5)
 
@@ -255,20 +293,36 @@ lets it through only when it matches a held position (§5.3).
 ### 5.2 What the run does
 
 ```
-1. py trader-broker/closer.py precheck        # IST now in [15:00, 15:25), trading day, else exit "nothing to do: <why>"
-2. get_orders, get_positions  -> Claude saves raw JSON to trader/kite/{orders,positions}.json
-3. py trader-broker/closer.py plan            # writes trader/close-plan.json (+ check id, written_at)
-4. for each "cancel" line: cancel_order       # this skill's open SL stops for that symbol, so a stop cannot fire after the sell and open a short
-5. for each "sell" line: place_order          # regular / NSE / SELL / MIS / LIMIT / IOC, price = last - band, rounded to tick
+1. py trader-broker/closer.py precheck        # hook registered [R7]; IST now in [15:00, 15:25) (F&O list: [15:00, 15:10) [R8]); trading day; else "nothing to do: <why>"
+2. get_orders  -> closer.py cancels           # every open or part-filled BUY this pack placed today [R1], and this pack's open SL stops
+   for each cancel line: cancel_order
+3. get_orders, get_positions AGAIN [R3]       # read only after the cancels; Claude saves raw JSON to trader/kite/{orders,positions}.json
+4. py trader-broker/closer.py plan            # writes trader/close-plan.json (+ check id, written_at), sells from the re-read only
+5. for each "sell" line: place_order          # regular / NSE / SELL / MIS / LIMIT / IOC, price per §4.3, minus band, rounded to tick
 6. get_orders again -> closer.py result       # logs each line placed/rejected/unfilled into the broker log as kind "auto-close"
-7. anything still open: say so; Zerodha squares it off at 15:12 / 15:25
+7. one retry, only for unfilled lines [R3]:   # get_orders + get_positions again, closer.py plan --retry writes NEW lines (wider band); the old lines stay used
+8. anything still open: say so; Zerodha squares it off at 15:12 / 15:25
 ```
 
+* **Order of steps [R1, R3]:** cancels first (resting entry BUYs, then
+  stops), then a fresh read, then the plan. A cancel that fails because the
+  stop already fired then shows as a smaller (or zero) position in the re-read,
+  so the plan cannot double-sell. A resting LIMIT/DAY entry placed at 14:58
+  would otherwise fill after 15:00; step 2 removes it.
 * **The plan holds only symbols that pass all of these:**
   * `product == MIS` and `exchange == NSE`;
   * net long quantity greater than 0 in `positions.json`;
-  * the broker log has an entry **placed today by this pack**.
-* **Quantity** = min(net long held, quantity this pack bought today).
+  * **opened by this pack, by the broker's own record [R5]:** `ticket.py result
+    --status placed` stores the Kite `order_id`, and every order the pack places
+    carries the `tag` `trader-pack`. A plan line needs a broker-log entry whose
+    `order_id` is a **COMPLETE BUY** with that tag in today's `orders.json`. The
+    log alone is not enough.
+* **Quantity** = min(net long held, filled quantity of those COMPLETE BUYs).
+* **F&O-list stocks [R8]:** the no-yes sell and the guard stop at **15:10**
+  for a stock on `fo_mktlots.csv`, two minutes before Zerodha's 15:12 cut.
+* **No no-yes sell before 15:00** (§9 decision 5). The target is the first
+  sell between 15:00 and 15:03; the schedule time is set from B0's measured
+  start offset.
 * **Excluded:** positions the user opened by hand. They are listed in the
   output and left alone (§9 Q3).
 * **Why IOC LIMIT:** a stale price can never leave a resting sell behind. If
@@ -290,15 +344,31 @@ the reason on stderr) unless one of these holds:
 * **A stop SELL (§4.2 (b)):** it matches the approved pair's stop leg, and its
   quantity is no more than held.
 * **A 3 pm SELL:** it matches a line in `close-plan.json`, which must be under
-  5 minutes old and from today, with IST in [15:00, 15:25). Each line is used
-  once, and the guard marks it used.
-* **A `cancel_order`:** the `order_id` is in `close-plan.json`'s cancel lines,
-  or in an approved exit ticket.
+  5 minutes old and from today, with IST in [15:00, 15:25), or [15:00, 15:10)
+  for an F&O-list stock [R8]. Each line is used once, and the guard marks it
+  used. A retry is a new line (§5.2 step 7) [R3].
+* **An approved exit SELL [R2]:** an APPROVED exit ticket (taking the target,
+  or closing by hand, including after 15:00), quantity no more than held, any
+  time in the session (09:15 to 15:25; 15:10 for the F&O list), against a
+  `positions.json` under 5 minutes old. In an interactive session **Claude
+  fetches it**: the broker SKILL calls `get_positions` and saves it just before
+  the exit's `place_order`, and ticket.py refuses the exit ticket if the file is
+  missing or old. An exit ticket **cancels the stop first** (its cancel line
+  comes before its sell), so the stop cannot later fire and open a short.
+* **A `cancel_order`:** the `order_id` is in `close-plan.json`'s cancel lines
+  (a resting entry BUY [R1] or a stop), or is the stop of an approved exit
+  ticket.
 * **`modify_order`:** always blocked (nothing in the pack modifies).
+* **Dry run (§9 decision 1):** while `dry_run` is true in the broker config,
+  **every** `place_order` exits 2, whatever it is.
 
 **Fail closed:** unreadable input, a missing file, an unknown tool,
 `variety` other than `regular`, `product` other than MIS, MARKET or SL-M, and
 `exchange` other than NSE all exit 2.
+
+**The B0 gate [R7]:** B0 must show that an exit-2 hook blocks an MCP tool that
+the scheduled task has on "always allow". If it does not, the no-yes close
+(D4) is not built in B4 and goes back to Fable and the owner.
 
 **Known gap (F14):** a hook that *times out* does not block. The guard is
 stdlib-only, reads two small files, and is given a 30 s timeout. B4 measures
@@ -308,7 +378,7 @@ printed.
 
 **Leftover-position check (§9 Q2):** the D4 quantity rule ("no more than
 held") relies on `positions.json` being under 5 minutes old. If the user sells
-by hand between steps 2 and 5, an IOC sell could go short for that gap. The
+by hand between steps 3 and 5, an IOC sell could go short for that gap. The
 guard re-reads the file's age. Calling `get_positions` again just before each
 sell would narrow the gap. B4 does the re-read; closing the gap fully is not
 possible from outside the broker.
@@ -365,7 +435,35 @@ B0 comes first because F5 (market protection), F14 (the hook against "always
 allow") and the start offset decide details of B2 to B4. B1 can be built while
 B0 waits on the owner.
 
-## 9. Decisions this plan needs (Fable rules; the owner may overrule)
+**Process [R10]:**
+* One branch, `feat/india-zerodha`, carries B1 to B7, with one review packet
+  per batch. It is merged to `main` **once**, on Fable's full approval of B7,
+  so `main` is never half-converted.
+* B2 to B4 wait for Fable's ruling on the B0 notes. B0 also settles the weak
+  cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
+  the entry TTL [R1].
+* **The owner's own word, to the builder, for each of these:** B0's real
+  orders; the Kite keys; the static IP; installing the hook; creating the
+  scheduled task. A ruling from Fable is not that word.
+
+## 9. Decisions (ruled by Fable on 2026-11-12; the owner may overrule)
+
+| # | Ruling |
+|---|---|
+| 1 | **Dry run, default on.** The key is renamed `dry_run`; a config with the old `paper` key is refused by name. The guard blocks every `place_order` while `dry_run` is true. |
+| 2 | Accepted, with R3 (§5.2). |
+| 3 | Hand-opened positions are **left alone and listed**. Fable has told the owner. |
+| 4 | Yes, as a **labelled estimate**. The ₹50 + GST square-off fee is not in it; the miss message names it. |
+| 5 | Decided from B0's measured offset. Target: first sell between 15:00 and 15:03. The guard never passes a no-yes sell before 15:00. |
+| 6 | Yes: no entries on special sessions. |
+| 7 | Yes: chosen in B5. |
+| 8 | Yes to both (Indian grouping; `*_inr`, old keys refused). |
+| 9 | Replace with a plainly made-up Indian example, labelled as an example and not advice. |
+| 10 | Keep the MIT notice and the upstream credit. **No version bump** unless the owner asks. |
+| 11 | (b). |
+| 12 | Yes. |
+
+The questions as first asked:
 
 1. **Paper becomes a dry run** (F6). Keep `"paper": true` as the default?
 2. **D4's "no more than held"** cannot be exact from outside the broker
@@ -393,8 +491,9 @@ B0 waits on the owner.
 
 ## 10. What this commit is
 
-One file, `PLAN_INDIA_ZERODHA.md`, on `plan/india-zerodha`. It contains no
-code and no test changes. The suite was not run, because a markdown file
+One file, `PLAN_INDIA_ZERODHA.md`, first on `plan/india-zerodha`
+(`1259b8c`), then amended with Fable's ruling (R1 to R10, §9) on
+`feat/india-zerodha`. It contains no code and no test changes. The suite was not run, because a markdown file
 cannot change runtime behaviour. The live checks quoted in F9 to F11 were
 one-off `curl` reads of public endpoints on 2026-11-12.
 
