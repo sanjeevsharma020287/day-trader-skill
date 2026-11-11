@@ -149,6 +149,9 @@ that draft orders to Needs approval too.
    stock or amount). Ask again. Never turn a reply into a yes yourself.
 4. Only after "Recorded your yes", call `place_stock_order` with exactly the
    JSON the ticket printed. Claude's card appears: Allow once or Deny.
+   A yes expires with its risk PASS. If `show` says EXPIRED (the card was left
+   open, or the session stopped), do not place it: record `ticket.py result
+   --index N --status failed --note expired`.
 5. Record what happened: `ticket.py result --index N --status placed
    --broker-id <id> --filled-qty Q --filled-price P` (the fill from the
    response or `get_open_position`), or `--status denied`, or `--status failed`

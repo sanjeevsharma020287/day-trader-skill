@@ -255,10 +255,11 @@ class Flow(unittest.TestCase):
         with open(self.risk) as fh:
             doc = json.load(fh)
         for k, v in change.items():
-            if v is None:
-                doc.pop(k, None)
-            else:
-                doc[k] = v
+            for d in [doc] + (doc["results"] if k == "entries_until" else []):  # the file's and each order's
+                if v is None:
+                    d.pop(k, None)
+                else:
+                    d[k] = v
         with open(self.risk, "w") as fh:
             json.dump(doc, fh)
 
@@ -304,18 +305,70 @@ class Flow(unittest.TestCase):
         code, text, _ = run(self.args("show", "--index", "1"))
         self.assertIn("NOT READY: the risk check has no time on it", text)
 
-    def test_window_off_keeps_only_the_15_minutes(self):
+    def test_a_yes_left_open_expires_with_its_pass(self):
+        # Fable R1: a yes at 15:29 with the card left open must not read as "place it" at 16:30
+        self.assertEqual(self.run_risk(now="2026-10-19 15:29"), 0)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 15:29"))
+        self.assertEqual(code, 0, err)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:30"))
+        self.assertIn("APPROVED by you at 2026-10-19T15:29:00-04:00, waiting for the place_stock_order", text)
+        for late, why in (("2026-10-19 15:31", "no new entries after 15:30 New York today (it is 15:31)"),
+                          ("2026-10-19 16:30", "the risk check is 61 minutes old (from 15:29 New York; it holds 15); "
+                                              "run check.py again")):
+            code, text, _ = run(self.args("show", "--index", "1", now=late))
+            self.assertIn("EXPIRED: your yes at 2026-10-19T15:29:00-04:00 no longer holds (%s). "
+                          "Do not place it" % why, text)
+            self.assertNotIn("waiting for the place_stock_order", text)
+        code, _, err = run(self.args("result", "--index", "1", "--status", "failed", "--note", "expired",
+                                     now="2026-10-19 16:30"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["status"] for r in self.state_doc()["orders"]], ["approved", "failed"])
+
+    def test_a_yes_expires_after_15_minutes_too(self):
+        self.assertEqual(self.run_risk(), 0)
+        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
+        self.assertIn("EXPIRED: your yes at 2026-10-19T10:20:00-04:00 no longer holds (the risk check is "
+                      "16 minutes old", text)
+
+    def test_a_cutoff_that_is_not_a_time_fails_closed(self):
+        # Fable R2: "10:00" > "9:30" and "15:31" > "True" are both False as strings
+        self.run_risk()
+        for bad in ("9:30", True, "15:30:00", "soon", 1530):
+            self.risk_doc(entries_until=bad)
+            code, text, _ = run(self.args("show", "--index", "1"))
+            self.assertIn("NOT READY: the risk check's entry cut-off %r is not a time" % (bad,), text)
+        self.risk_doc(entries_until="15:30")
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("READY: trader-risk PASS", text)
+
+    def test_window_off_a_plain_day_entry_still_ends_at_the_close(self):
+        # owner, R4: the window off lifts no_entries_* only; the close still binds a plain day order
         with open(self.cfg) as fh:
             c = json.load(fh)
         c.update(no_entries_before=None, no_entries_after=None)
         with open(self.cfg, "w") as fh:
             json.dump(c, fh)
-        self.assertEqual(self.run_risk(now="2026-10-19 15:50"), 0)
+        self.assertEqual(self.run_risk(now="2026-10-19 15:55"), 0)
         with open(self.risk) as fh:
-            self.assertIsNone(json.load(fh)["entries_until"])
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:55"))
+            self.assertEqual(json.load(fh)["results"][0]["entries_until"], "15:59")
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:59"))
         self.assertIn("READY: trader-risk PASS", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:06"))
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:05"))
+        self.assertIn("NOT READY: no new entries after 15:59 New York today (it is 16:05)", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 16:05"))
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.state))
+        # the same order as gtc: no cut-off, only the 15 minutes
+        with open(self.orders) as fh:
+            doc = json.load(fh)
+        doc["orders"][0]["time_in_force"] = "gtc"
+        with open(self.orders, "w") as fh:
+            json.dump(doc, fh)
+        self.assertEqual(self.run_risk(now="2026-10-19 16:05"), 0)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:10"))
+        self.assertIn("READY: trader-risk PASS", text)
+        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:21"))
         self.assertIn("16 minutes old", text)
 
     def test_blocked_orders_are_never_ready(self):

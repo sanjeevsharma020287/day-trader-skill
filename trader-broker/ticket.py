@@ -8,8 +8,9 @@ work around the one moment that matters, your yes:
             exact JSON Claude will send to Alpaca's place_stock_order tool.
             A bracket order shows its stop-loss, take-profit and the max loss
             at the stop. An order is READY only if trader-risk passed THIS
-            exact order today (matched by fingerprint) and nobody has decided
-            on it yet.
+            exact order in the last 15 minutes (matched by fingerprint; an
+            entry also only until the risk check's entries_until) and nobody
+            has decided on it yet. A yes expires the same way.
   approve   records your explicit yes for ONE order, with your reply word for
             word. It refuses "yes to all", "sure", "ok", a yes that names a
             different stock or amount, and any order that is not READY.
@@ -344,11 +345,14 @@ def risk_stale(risk, rv, order, now):
         return ("the risk check is %d minutes old (from %s New York; it holds %d); run check.py again"
                 % (age, checked.strftime("%H:%M"), RISK_MAX_AGE_MIN))
     if kind_of(order, rv) == "entry":
-        if "entries_until" not in risk:
+        src = rv if "entries_until" in rv else risk  # this order's own cut-off, else the file's
+        if "entries_until" not in src:
             return "the risk check is from an older trader-risk with no entry cut-off; run check.py again"
-        until = risk.get("entries_until")  # None: the window is off in the config
+        until = src.get("entries_until")  # None: no cut-off (the window off and not a plain day order)
         if until == "":
             return "the market is closed today; no new entries"
+        if until is not None and not re.fullmatch(r"\d\d:\d\d", str(until)):
+            return "the risk check's entry cut-off %r is not a time; run check.py again" % (until,)
         if until is not None and now_et.strftime("%H:%M") > str(until):
             return ("no new entries after %s New York today (it is %s)"
                     % (until, now_et.strftime("%H:%M")))
@@ -367,6 +371,10 @@ def status_of(order, risk, state, today, now):
     if rec:
         st = rec.get("status")
         if st == "approved":
+            stale = risk_stale(risk, rv, order, now)
+            if stale:  # a yes left open past the PASS is no yes: same overnight hold, second door
+                return False, ("EXPIRED: your yes at %s no longer holds (%s). Do not place it; record "
+                               "ticket.py result --status failed --note expired" % (rec.get("at"), stale)), rv
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
     stale = risk_stale(risk, rv, order, now)

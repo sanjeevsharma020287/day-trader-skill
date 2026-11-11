@@ -210,8 +210,29 @@ def _shift(t, hours):
     return dt.time()
 
 
+def market_closed(now_et):
+    """Reasons the market is closed now, New York time: a weekend, an NYSE holiday, or outside
+    09:30 to the close (1:00 p.m. on an early close). Empty while the session is open."""
+    d, t = now_et.date(), now_et.time().replace(second=0, microsecond=0)
+    ok, why = trading_day(d)
+    stamp = now_et.strftime("%a %Y-%m-%d %H:%M")
+    if not ok:
+        return ["window: the market is closed today (%s, %s New York)" % (why, stamp)]
+    close = EARLY if d.isoformat() in NYSE_EARLY_CLOSE else CLOSE
+    if t < OPEN or now_et.time() >= close:
+        return ["window: the market is closed (%s New York; the session is %s to %s)"
+                % (stamp, OPEN.strftime("%H:%M"), close.strftime("%H:%M"))]
+    return []
+
+
+def window_off(c):
+    return (hhmm(c.get("no_entries_before"), "no_entries_before") is None
+            and hhmm(c.get("no_entries_after"), "no_entries_after") is None)
+
+
 def window_check(now_et, c):
-    """Reasons an entry cannot be placed now (New York time). Empty when the window is off."""
+    """Reasons an entry cannot be placed now (New York time). Empty when the window is off
+    (check() then still blocks a plain day entry while the market is closed)."""
     before = hhmm(c.get("no_entries_before"), "no_entries_before")
     after = hhmm(c.get("no_entries_after"), "no_entries_after")
     if before is None and after is None:
@@ -221,14 +242,10 @@ def window_check(now_et, c):
     if d.year not in CALENDAR_YEARS:
         warns.append("the holiday list covers %s only: check nyse.com for %s"
                      % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat()))
-    ok, why = trading_day(d)
-    stamp = now_et.strftime("%a %Y-%m-%d %H:%M")
-    if not ok:
-        return ["window: the market is closed today (%s, %s New York)" % (why, stamp)], warns
+    closed = market_closed(now_et)
+    if closed:
+        return closed, warns
     close = EARLY if d.isoformat() in NYSE_EARLY_CLOSE else CLOSE
-    if t < OPEN or now_et.time() >= close:
-        return ["window: the market is closed (%s New York; the session is %s to %s)"
-                % (stamp, OPEN.strftime("%H:%M"), close.strftime("%H:%M"))], warns
     if close == EARLY and after is not None:
         after = _shift(after, 3)
         warns.append("early close at 1:00 p.m. today (%s): no new entries after %s"
@@ -242,16 +259,17 @@ def window_check(now_et, c):
     return [], warns
 
 
-def entries_until(now_et, c):
+def entries_until(now_et, c, plain_day=True):
     """The last New York minute ("HH:MM") an entry may still be approved today.
 
     trader-broker refuses an entry's yes after it, so a PASS from before the cut-off
-    cannot become an order once the window or the session has closed. None when both
-    no_entries_* are null (the window is off, e.g. for extended-hours orders); "" when
-    the market is closed all day."""
+    cannot become an order once the window or the session has closed. "" when the market
+    is closed all day. With both no_entries_* null (the window off) a plain day entry
+    still ends at the close; any other entry (extended hours, gtc, opg, cls, ioc, fok)
+    has no cut-off: None."""
     before = hhmm(c.get("no_entries_before"), "no_entries_before")
     after = hhmm(c.get("no_entries_after"), "no_entries_after")
-    if before is None and after is None:
+    if before is None and after is None and not plain_day:
         return None
     d = now_et.date()
     if not trading_day(d)[0]:
@@ -418,6 +436,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             loss_today += ml
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
     win_reasons, win_warns = window_check(now_et, c)
+    closed_now = market_closed(now_et) if window_off(c) else []  # the owner's rule: still no plain day entry
     pdt_n, pdt_list = day_trades(state, today) if c.get("pdt_guard") else (0, [])
     seen = set()
     results = []
@@ -444,6 +463,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         side = str(o.get("side", "")).strip().lower()
         typ = str(o.get("type", "market")).strip().lower()
         tif = str(o.get("time_in_force", "day")).strip().lower()
+        plain_day = tif == "day" and not o.get("extended_hours")
         qty, notional = o.get("qty"), o.get("notional")
         plan = o.get("plan") if isinstance(o.get("plan"), dict) else {}
         oc = str(o.get("order_class") or "").strip().lower()
@@ -646,6 +666,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
             later.extend(win_reasons)
+            if plain_day:
+                later.extend(closed_now)
             if c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"
@@ -711,6 +733,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             "stop": stop, "target": target, "risk_per_share": risk_ps, "max_loss": max_loss,
             "reward_risk": rr, "fingerprint": fingerprint(o), "verdict": verdict,
             "reasons": reasons, "warnings": warns, "info": info,
+            "entries_until": entries_until(now_et, c, plain_day) if kind == "entry" else None,
         })
 
     return {

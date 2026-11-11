@@ -90,10 +90,14 @@ How the numbers work:
 - **The window** is New York time, worked out in the tool (daylight saving
   included), never from the computer's clock zone. Weekends and NYSE holidays
   are closed. On a 1:00 p.m. early close the window ends 3 hours earlier too.
-  Set both `no_entries_*` to null to switch the window off; that also lifts
-  the closed-market block (for extended-hours or good-until-canceled orders).
-  `risk.json` records `entries_until`, the last New York minute an entry may
-  still be approved, and trader-broker refuses any PASS older than 15 minutes.
+  Set both `no_entries_*` to null to switch the window off. That lifts only
+  those two times: a plain day entry (`time_in_force` day, no
+  `extended_hours`) is still blocked while the market is closed (weekends,
+  holidays, before 09:30, at or after the close). Extended-hours entries and
+  entries with any other `time_in_force` (gtc, opg, cls, ioc, fok) are not.
+  `risk.json` records `entries_until` for the file and for each order, the
+  last New York minute that entry may still be approved, and trader-broker
+  refuses any PASS older than 15 minutes.
 - **pdt_guard** (off by default) counts a day trade as a symbol bought and
   sold on the same day in the log, plus any entry placed today (it is meant
   to be flat by the close). FINRA removed the $25,000 pattern-day-trader
@@ -118,7 +122,9 @@ not at the broker, a price too old to use, an early close today.
    limit yourself.
 4. If the order changes in any way, run the check again. trader-broker matches
    each order to its verdict by fingerprint, so an edited order is not ready
-   until it passes again, and a verdict from yesterday does not count today.
+   until it passes again. A verdict holds for 15 minutes (an entry also only
+   until `entries_until`), so a verdict from earlier, or from yesterday, does
+   not count now.
 
 ## Example: the reel
 
