@@ -5,15 +5,22 @@ import unittest
 
 from _load import ROOT
 
-# v2, the day-trading pack: the eleven folders the reel's repo card shows
+# v2, the day-trading pack: ten folders (trader-pelosi removed by the owner, PLAN_INDIA_ZERODHA.md)
 SKILLS = ["trader-scanner", "trader-news", "trader-entry", "trader-exit", "trader-timemachine",
-          "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst",
-          "trader-pelosi"]
-ABOUT = ("11 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
+          "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst"]
+# the plan for the move to NSE on Zerodha sits at the root until B7 decides where it lives
+PLAN_DOCS = ["PLAN_INDIA_ZERODHA.md"]
+# tools that carry the shared India clock block, byte-identical
+CLOCK_TOOLS = ["trader-alerts/alerts.py", "trader-broker/ticket.py", "trader-budget/size.py",
+               "trader-entry/entry.py", "trader-exit/exit.py", "trader-news/news.py", "trader-risk/check.py",
+               "trader-scanner/scan.py", "trader-timemachine/timemachine.py"]
+CLOCK_START = "# ==== india clock: shared, byte-identical in every tool (tests/test_repo.py checks) ===="
+CLOCK_END = "# ==== end india clock ===="
+ABOUT = ("10 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
          "entry and exit, and replay every outcome before you risk a dollar.")
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
-              "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
+              "trader-risk", "trader-broker", "trader-alerts"]
 V1_ONLY = ["trader-copycat", "trader-screener", "trader-tax", "trader-rebalance"]
 
 
@@ -33,14 +40,34 @@ def every_text_file():
 
 
 class Repo(unittest.TestCase):
-    def test_eleven_skill_folders_at_the_root(self):
+    def test_ten_skill_folders_at_the_root(self):
         found = sorted(d for d in os.listdir(ROOT)
                        if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")))
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS + PLAN_DOCS))
+
+    def test_the_india_clock_is_the_same_in_every_tool(self):
+        blocks = {}
+        for rel in CLOCK_TOOLS:
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+                src = fh.read()  # text mode: CRLF and LF checkouts compare equal
+            self.assertEqual(src.count(CLOCK_START), 1, rel)
+            self.assertEqual(src.count(CLOCK_END), 1, rel)
+            blocks[rel] = src[src.index(CLOCK_START):src.index(CLOCK_END)]
+            self.assertIn("def nse_trading_day(d):", blocks[rel], rel)
+        first = blocks[CLOCK_TOOLS[0]]
+        for rel, block in blocks.items():
+            self.assertEqual(block, first, "%s differs from %s" % (rel, CLOCK_TOOLS[0]))
+        # and no other tool carries a stray copy
+        for s in SKILLS:
+            for f in os.listdir(os.path.join(ROOT, s)):
+                rel = "%s/%s" % (s, f)
+                if f.endswith(".py") and rel not in CLOCK_TOOLS:
+                    with open(os.path.join(ROOT, s, f), encoding="utf-8") as fh:
+                        self.assertNotIn(CLOCK_START, fh.read(), rel)
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:

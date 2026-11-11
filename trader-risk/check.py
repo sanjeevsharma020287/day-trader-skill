@@ -130,6 +130,76 @@ class RiskError(Exception):
 
 # ---------------------------------------------------------------- time (New York, no tz files)
 
+# ==== india clock: shared, byte-identical in every tool (tests/test_repo.py checks) ====
+import datetime as _ist_dt
+
+IST_OFFSET = _ist_dt.timedelta(hours=5, minutes=30)  # India keeps UTC+5:30 all year: no summer time
+NSE_HOLIDAYS = {  # NSE trading holidays 2026 (circular NSE/CMTR/71775; api/holiday-master, read 2026-11-12)
+    "2026-01-15": "Municipal Corporation Election - Maharashtra",
+    "2026-01-26": "Republic Day",
+    "2026-02-15": "Mahashivratri",
+    "2026-03-03": "Holi",
+    "2026-03-21": "Id-Ul-Fitr (Ramadan Eid)",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Shri Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Bakri Id",
+    "2026-06-26": "Muharram",
+    "2026-08-15": "Independence Day",
+    "2026-09-14": "Ganesh Chaturthi",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
+    "2026-11-08": "Diwali Laxmi Pujan",
+    "2026-11-10": "Diwali-Balipratipada",
+    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
+    "2026-12-25": "Christmas",
+}
+NSE_SPECIAL_SESSIONS = {  # the exchange opens, but this pack does not trade them (fail closed)
+    "2026-02-01": "Union Budget live session (Sunday)",
+    "2026-11-08": "Muhurat trading (Sunday)",
+}
+NSE_CALENDAR_YEARS = (2026,)  # add a year only from NSE's own circular for it
+
+
+def to_ist(utc):
+    """UTC (naive or aware) -> naive India time."""
+    if utc.tzinfo is not None:
+        utc = (utc - utc.utcoffset()).replace(tzinfo=None)
+    return utc + IST_OFFSET
+
+
+def ist_to_utc(local):
+    """Naive India time -> naive UTC."""
+    return local - IST_OFFSET
+
+
+def parse_ist(text):
+    """ISO time -> naive UTC. A time with no offset is India time; Z or +hh:mm is honoured.
+    Raises ValueError on text that is not an ISO time."""
+    dt = _ist_dt.datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return ist_to_utc(dt)
+    return (dt - dt.utcoffset()).replace(tzinfo=None)
+
+
+def nse_trading_day(d):
+    """(is_trading_day, reason) for an India date. Fails closed: a year with no NSE calendar,
+    a weekend, a holiday or a special session is not a trading day for this pack."""
+    if d.year not in NSE_CALENDAR_YEARS:
+        return False, "no NSE holiday calendar for %d in this pack yet" % d.year
+    key = d.isoformat()
+    if key in NSE_SPECIAL_SESSIONS:
+        return False, "NSE special session (no entries): " + NSE_SPECIAL_SESSIONS[key]
+    if d.weekday() >= 5:
+        return False, "weekend"
+    if key in NSE_HOLIDAYS:
+        return False, "NSE holiday: " + NSE_HOLIDAYS[key]
+    return True, ""
+# ==== end india clock ====
+
+
 def _nth_sunday(year, month, n):
     d = datetime.date(year, month, 1)
     d += datetime.timedelta(days=(6 - d.weekday()) % 7)
