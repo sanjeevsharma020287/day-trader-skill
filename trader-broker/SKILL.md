@@ -10,9 +10,11 @@ description: >-
   09:30 to 15:00 India time, on a risk check under 15 minutes old. Real orders
   stay blocked until the owner records B0 by hand. Builds the LIMIT sell that
   closes a day trade, records fills as today's MIS position, and logs each
-  entry's max loss for trader-risk's daily limit. Covers self-hosting
-  zerodha/kite-mcp-server in Claude Desktop (keys in the config file, never
-  in chat) and setting place_order to "Needs approval". Use when the user
+  entry's max loss for trader-risk's daily limit. A guard hook checks every
+  order call in code, and the 3 pm close (off until the owner proves it)
+  sells this pack's positions with no yes. Covers self-hosting
+  zerodha/kite-mcp-server in Claude Code (keys in .mcp.json, never in chat),
+  the guard and the ask permissions. Use when the user
   says "place the order", "buy it", "execute", "send it to Zerodha", "place
   the stop", "close my position", "flatten", "get me out", "connect Kite",
   "set up Zerodha", or after /trader-risk passes.
@@ -36,7 +38,9 @@ gates, every time:
    day. A check made with `check.py --now` or `--today` is refused.
 3. **The user typed an explicit yes for this one ticket** in the chat.
 4. **The user clicked Allow once** on Claude's own permission card, which
-   appears because `place_order` is set to "Needs approval".
+   appears because `place_order` is on ask in `.claude/settings.json`.
+   Behind all four, the guard hook (`guard.py`) checks each order call in
+   code and blocks anything this pack did not prepare (R7, R14).
 
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
@@ -65,14 +69,22 @@ real clock, in India time.
 | `trader/state/risk.json` | trader-risk's verdicts, with `checked_at` and `check_id` |
 | `trader/state/broker.json` | every yes, no, dry run, placed, failed and filled, with each entry's max loss and Kite's order_id |
 | `trader/portfolio.json` | cash and today's MIS positions, updated by `fill` and by `result --filled-qty` |
-| `trader/universe.txt` | the tick and F&O flag for `flatten` (trader-scanner writes it) |
+| `trader/universe.txt` | the tick and F&O flag for `flatten` and the 3 pm close (trader-scanner writes it) |
+| `trader/kite/*.json` | the kite replies the 3 pm close reads (`closer.py save`), with the time they were saved |
+| `trader/close-cancels.json`, `trader/close-plan.json` | the 3 pm lines; the guard marks each one used |
+| `trader/state/guard.json` | the yeses the guard has let through once |
 
-## Setup: Zerodha through a self-hosted kite-mcp-server
+## Setup: Zerodha through a self-hosted kite-mcp-server, in Claude Code
 
 Zerodha's hosted MCP server (`mcp.kite.trade`) leaves out the order tools,
 so orders need the open-source `zerodha/kite-mcp-server` run on the user's
 own machine with their own Kite Connect app. Read from its source (commit
 `5e044dc`, PLAN_INDIA_ZERODHA.md P5); not yet proven on a real account.
+
+The pack runs in **Claude Code** (the Code tab of Claude Desktop, or the CLI)
+opened on this project folder, because only there can the guard hook stop an
+order tool (R7). The chat tab's `claude_desktop_config.json` has no hooks, so
+the kite server is not set up there. Every step below is the user's own.
 
 1. **A Kite Connect app.** The user creates one at developers.kite.trade.
    The Personal plan is free and covers orders, but has no live market data,
@@ -82,11 +94,9 @@ own machine with their own Kite Connect app. Read from its source (commit
    leave the internet from it.
 3. **The server.** The user builds or downloads `kite-mcp-server` (Go) from
    github.com/zerodha/kite-mcp-server.
-4. **Claude Desktop.** Settings > Developer > Edit Config opens
-   `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`, macOS:
-   `~/Library/Application Support/Claude/`). The user adds the block in
-   `claude_desktop_config.example.json` here and types their own key and
-   secret into that file:
+4. **`.mcp.json` in the project folder**, from `mcp.example.json` here. The
+   server must be named `kite`, so its tools are exactly `mcp__kite__*`. The
+   user types their own key and secret into that file:
 
 ```json
 {
@@ -107,28 +117,40 @@ own machine with their own Kite Connect app. Read from its source (commit
    **Keys never go in the chat.** Never ask for them, never read this file
    back into the conversation, and if the user pastes a key anyway, tell
    them to delete that message and make a new secret in the Kite developer
-   console. `EXCLUDED_TOOLS` removes tools this pack never uses: nothing in
-   it modifies an order, and GTT is not for MIS.
-5. **Log in each trading morning.** Kite's access token ends at 6 AM the next
+   console. Keep `.mcp.json` out of git. `EXCLUDED_TOOLS` removes tools this
+   pack never uses: nothing in it modifies an order, and GTT is not for MIS.
+5. **`.claude/settings.json` in the project folder**, from
+   `settings.example.json` here. It does two things:
+   - `permissions`: `place_order` and `cancel_order` on **ask** (the Allow
+     once card), `modify_order` and the GTT tools on **deny**. Never put an
+     order tool in `allow`.
+   - `hooks`: `guard.py` as a PreToolUse hook for `place_order`,
+     `modify_order` and `cancel_order`. On Windows, change `python3` in its
+     command to the Python the user runs (`py` or `python`).
+   Until the guard is registered for all three, ticket.py stays in dry run
+   and `closer.py precheck` refuses (R7). The server marks no tool as
+   destructive, so these settings and the guard are the only gates on it.
+6. **Log in each trading morning.** Kite's access token ends at 6 AM the next
    day. Ask the server for its login link (its `login` tool) and the user
    opens it in their browser and logs in there. Never ask for the password or
    the TOTP, and never log in for them.
-6. **Tool permissions.** Customize > Connectors (Settings > Connectors in
-   older versions), open kite, and for each tool:
-   - `place_order` and `cancel_order`: **Needs approval**. Never Always allow.
-   - any tool still listed that changes an order (`modify_order`, the GTT
-     tools): **Blocked**.
-   - read-only tools (`get_orders`, `get_order_history`, `get_order_trades`,
-     `get_positions`, `get_holdings`, `get_margins`, `get_profile`,
-     `get_trades`, `get_ltp`, `get_quotes`): Always allow is fine.
-   The server marks no tool as destructive, so these settings are the only
-   thing that tells Claude Desktop which tools need a card.
 7. **Check it.** Ask Claude for `get_profile` and `get_margins` (read only)
    and confirm the account is the user's own.
 
-In Claude Code instead of Claude Desktop, keep the order tools on ask in
-`.claude/settings.json`: `"permissions": {"ask": ["mcp__kite__place_order",
-"mcp__kite__cancel_order"]}`, and never put an order tool in `allow`.
+### The guard
+
+`guard.py` reads each `place_order`, `modify_order` and `cancel_order` call
+before it runs and blocks it (exit 2) unless this pack allows it:
+`modify_order` never; a `place_order` only in the Kite shape (regular, NSE,
+MIS, LIMIT or SL, the tag, whole-number JSON quantity); while real orders are
+locked, nothing but the stop of a real position (one prepared with
+`ticket.py stop` for an entry recorded as placed); once unlocked, a BUY only
+for your recorded yes, under 15 minutes old, sent once, 09:30 to 15:00; a
+stop or an approved exit inside the session; a 3 pm line only from today's
+plan, once, 15:00 to 15:25 (15:10 for the F&O list). A `cancel_order` only
+for a 3 pm cancel line or a stop before an approved exit. Letting a call
+through is not a yes: the Allow once card still follows in a chat session.
+A hook that times out does not block (a known gap; its timeout is 30 s).
 
 ### What the server does with what it is sent (read from source)
 
@@ -175,15 +197,51 @@ In Claude Code instead of Claude Desktop, keep the order tools on ask in
    3427` (from `get_order_trades`). It goes in as today's MIS position, the
    only kind trader-risk counts as held for a sell (R35).
 
-## The 3 pm close is not active yet
+## The 3 pm close
 
-Until the owner records `close_gate_proven_on` (B4), nothing in this pack
-sells or cancels at 15:00. Approve says so at every yes for an entry: an
-open position stays open, and a resting BUY can still fill after 15:00.
-Zerodha squares off an open MIS position at 15:12 for F&O-list stocks and
-15:25 for the rest, for ₹50 + GST an order. Tell the user to close by hand
-before then: cancel a resting entry in Kite, and use `flatten` below for a
-position.
+Until the owner records `close_gate_proven_on` by hand (after proving the
+close on a real account), nothing in this pack sells or cancels at 15:00
+(R17). Approve says so at every yes for an entry: an open position stays
+open, and a resting BUY can still fill after 15:00. Zerodha squares off an
+open MIS position at 15:12 for F&O-list stocks and 15:25 for the rest, for
+₹50 + GST an order. Tell the user to close by hand before then: cancel a
+resting entry in Kite, and use `flatten` below for a position.
+
+When it is active (`"dry_run": false`, `b0_proven_on`, `close_gate_proven_on`
+and the guard registered), the owner's local scheduled task "trader-close"
+(cron `0 15 * * 1-5` on a machine set to India time, "Keep computer awake",
+Always allow in that task only for `get_orders`, `get_positions`,
+`place_order`, `cancel_order` and the two `py` commands) runs:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/closer.py" precheck      # 0 GO, 3 REPORT ONLY, 1 nothing to do (or missed)
+# get_orders -> save the reply to trader/kite/orders.reply.json, then:
+python3 "${CLAUDE_SKILL_DIR}/closer.py" save orders
+python3 "${CLAUDE_SKILL_DIR}/closer.py" cancels       # cancel_order for each line it prints
+# get_orders and get_positions again (and get_ltp if it answers), save each, then:
+python3 "${CLAUDE_SKILL_DIR}/closer.py" plan          # place_order with exactly each line's input
+# get_orders again, save it, then:
+python3 "${CLAUDE_SKILL_DIR}/closer.py" result        # one retry if a line did not fill: plan --retry
+```
+
+- `cancels` lists every open or part-filled BUY and every open stop this pack
+  placed today (by the order_id in its log), and writes
+  `trader/close-cancels.json`.
+- `plan` reads the positions again after the cancels and writes one IOC LIMIT
+  SELL per position this pack opened today: the quantity is the smaller of
+  what is held and what this pack's BUYs filled. The limit is the last price
+  (Kite's LTP, then the positions' last price, then Yahoo) minus 0.5 %, or
+  1.5 % when the price is over 5 minutes old or of unknown age, on the tick.
+  No price, no tick, or an F&O-list stock after 15:10: no sell, said, and
+  Zerodha's square-off applies.
+- Positions opened by hand are listed and left alone. A position whose
+  order_id is in the log but whose order has no tag gets its own line and no
+  sell.
+- In REPORT ONLY (exit 3) `cancels` and `plan` print what is open and write
+  nothing. After 15:25 `precheck` logs "missed". The next morning `ticket.py
+  log` says which days Zerodha's square-off closed, not this pack.
+- Place only the lines `closer.py` printed. The guard takes each line once,
+  from a file written in the last 5 minutes, inside its window.
 
 ## Steps: getting out by hand
 
@@ -243,8 +301,10 @@ stay in the file; they are never sent.
   exception: the stop for a position a live yes already opened, if the owner switched back to dry run since.
 - Never writes `b0_proven_on` or `close_gate_proven_on`, or tells the user what date to put there.
 - Never places an order without all four gates, and never two tickets on one yes.
-- Never places orders from a scheduled or background task: nobody is there to say yes. (The 3 pm close is B4's,
-  behind its own gate.)
+- Never places orders from a scheduled or background task: nobody is there to say yes. The one exception is the
+  owner's "trader-close" task, and only the lines `closer.py` printed, once active (the owner's gates and the guard).
+- Never runs the 3 pm close by hand to get around its gates, and never writes `trader/close-plan.json` or
+  `trader/close-cancels.json` itself.
 - Never asks for, reads, stores or repeats API keys, secrets, passwords or the TOTP; never logs in for the user.
 - Never calls `modify_order` or a GTT tool.
 - Never retries a failed `place_order`, and never promises a fill price: a stop can fill worse, or not at all.

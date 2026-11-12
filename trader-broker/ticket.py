@@ -179,7 +179,7 @@ B0_PROVISIONAL = {
     "entry_validity": "DAY",          # entries and stops; TTL is not used until B0 shows how Kite takes it
     "stop_limit_band_pct": 0.5,       # the stop's SL limit sits this far below its trigger
     "close_band_pct": 0.5,            # the 3 pm close's limit, under a fresh price of known age
-    "close_band_wide_pct": 1.5,       # ... and under an older one (never for a price of unknown age)
+    "close_band_wide_pct": 1.5,       # ... and under an older one, or one of unknown age (R16a)
     "price_sources": ("kite_ltp", "kite_positions", "yahoo"),  # first one present wins
     "close_schedule": "15:00",        # when the owner's scheduled task runs the 3 pm close
 }
@@ -258,15 +258,55 @@ def proven_on(cfg, key, today):
     return v, None
 
 
-def mode(cfg, today):
-    """("live", line) only when "dry_run" is false AND b0_proven_on is a real date not in the future (R14).
-    Otherwise ("dry_run", line): nothing is sent."""
+HOOKED = ("mcp__kite__place_order", "mcp__kite__modify_order", "mcp__kite__cancel_order")
+
+
+def guard_problem(root):
+    """R7: why trader-broker/guard.py is not registered as a PreToolUse command hook for all three kite order tools
+    in <root>/.claude/settings.json (the owner installs it from settings.example.json), or None."""
+    path = os.path.join(root, ".claude", "settings.json")
+    if not os.path.exists(path):
+        return "there is no %s (the owner installs trader-broker/settings.example.json there)" % path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except ValueError:
+        return "%s is not valid JSON" % path
+    hooks = doc.get("hooks") if isinstance(doc, dict) else None
+    entries = (hooks or {}).get("PreToolUse") if isinstance(hooks, dict) else None
+    missing = []
+    for name in HOOKED:
+        found = False
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict):
+                continue
+            m = str(e.get("matcher") or "")
+            try:
+                hit = m in ("", "*") or re.fullmatch(m, name) is not None
+            except re.error:
+                hit = False
+            if hit and any(isinstance(h, dict) and h.get("type") == "command" and "guard.py" in str(h.get("command"))
+                           for h in (e.get("hooks") or [])):
+                found = True
+        if not found:
+            missing.append(name)
+    if missing:
+        return "the guard hook (trader-broker/guard.py) is not registered in %s for %s" % (path, ", ".join(missing))
+    return None
+
+
+def mode(cfg, today, root=None):
+    """("live", line) only when "dry_run" is false AND b0_proven_on is a real date not in the future (R14) AND the
+    guard hook is registered in the project's .claude/settings.json (R7). Otherwise ("dry_run", line)."""
     if (cfg or {}).get("dry_run", True) is not False:
         return "dry_run", "DRY RUN, nothing is sent"
     d, why = proven_on(cfg, "b0_proven_on", today)
     if d is None:
         return "dry_run", ("DRY RUN: \"dry_run\" is false, but %s, so real orders stay blocked until the owner "
                            "records B0 by hand (PLAN_INDIA_ZERODHA.md R14)" % why)
+    g = guard_problem(root or os.getcwd())
+    if g:
+        return "dry_run", "DRY RUN: \"dry_run\" is false, but %s, so real orders stay blocked (R7)" % g
     return "live", "LIVE, REAL MONEY (B0 recorded on %s)" % d
 
 
@@ -730,7 +770,7 @@ def _record(order, idx, today, now, status, **extra):
     rec = {"at": ist_iso(now), "date": today, "index": idx, "fingerprint": fingerprint(order),
            "pair": order.get("pair"), "leg": leg_of(order), "symbol": str(order.get("tradingsymbol", "")).upper(),
            "transaction_type": str(order.get("transaction_type", "")).upper(), "quantity": order.get("quantity"),
-           "plain": plain(order), "status": status}
+           "plain": plain(order), "status": status, "fo": order.get("fo")}
     rec.update({k: v for k, v in extra.items() if v is not None})
     return rec
 
@@ -1008,6 +1048,8 @@ def cmd_log(a):
     rows = [r for r in state.get("orders", []) if a.all or rec_day(r) == today]
     if not rows:
         print("No decisions recorded%s." % ("" if a.all else " today"))
+        for line in square_off_lines(state, today, to_ist(now), a.all):
+            print(line)
         return 1
     for r in rows:
         extra = (" order_id " + str(r["order_id"])) if r.get("order_id") else ""
@@ -1021,7 +1063,28 @@ def cmd_log(a):
         print("%s  %s %-10s %s%s%s%s" % (r.get("at"), idx, r.get("status"), r.get("plain"), reply, loss, extra))
     placed = sum(1 for r in rows if r.get("status") == "placed")
     print("%d placed%s." % (placed, "" if a.all else " today"))
+    for line in square_off_lines(state, today, to_ist(now), a.all):
+        print(line)
     return 0
+
+
+def square_off_lines(state, today, local, everything=False):
+    """5.4: a day with an entry placed and no auto-close row says who closed what was open. Shown for the last
+    such day before today and for today after 15:30 (every such day with --all)."""
+    days = {}
+    for r in state.get("orders", []):
+        d = rec_day(r)
+        days.setdefault(d, {"entry": False, "close": False})
+        if r.get("leg") == "entry" and r.get("status") == "placed":
+            days[d]["entry"] = True
+        if r.get("kind") == "auto-close" and r.get("status") == "auto-close":
+            days[d]["close"] = True
+    due = sorted(d for d, v in days.items() if v["entry"] and not v["close"]
+                 and (d < today or (d == today and local.time() >= NSE_CLOSE)))
+    if not everything:
+        due = [d for d in due if d == today] + [d for d in due if d < today][-1:]
+    return ["%s: no auto-close row from this pack. Anything still open was closed by Zerodha's square-off (not by "
+            "this pack, %s + GST an order); check Kite's tradebook." % (d, inr(50, 0)) for d in sorted(due)]
 
 
 def main(argv=None):

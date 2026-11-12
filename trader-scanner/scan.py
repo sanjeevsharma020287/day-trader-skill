@@ -223,7 +223,7 @@ B0_PROVISIONAL = {
     "entry_validity": "DAY",          # entries and stops; TTL is not used until B0 shows how Kite takes it
     "stop_limit_band_pct": 0.5,       # the stop's SL limit sits this far below its trigger
     "close_band_pct": 0.5,            # the 3 pm close's limit, under a fresh price of known age
-    "close_band_wide_pct": 1.5,       # ... and under an older one (never for a price of unknown age)
+    "close_band_wide_pct": 1.5,       # ... and under an older one, or one of unknown age (R16a)
     "price_sources": ("kite_ltp", "kite_positions", "yahoo"),  # first one present wins
     "close_schedule": "15:00",        # when the owner's scheduled task runs the 3 pm close
 }

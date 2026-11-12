@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "ask": [
+      "mcp__kite__place_order",
+      "mcp__kite__cancel_order"
+    ],
+    "deny": [
+      "mcp__kite__modify_order",
+      "mcp__kite__place_gtt_order",
+      "mcp__kite__modify_gtt_order",
+      "mcp__kite__delete_gtt_order"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__kite__place_order|mcp__kite__modify_order|mcp__kite__cancel_order",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/trader-broker/guard.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

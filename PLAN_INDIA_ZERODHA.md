@@ -168,7 +168,7 @@ See §5.
 | trader-timemachine | Changed | `timemachine.py` (75 bars, NSE calendar, IST), `SKILL.md`, a new 60-day fixture |
 | trader-budget | Changed | `size.py` (Kite order shape, §4.2; ₹; charges), `config.example.json`, `targets.example.json` (the Berkshire 13F example has no Indian equivalent; §9 Q9), `SKILL.md` |
 | trader-risk | Changed | `check.py` (D2/D6 window, removed rules, Kite format, F&O-aware close), `SKILL.md` |
-| trader-broker | Changed, plus 2 new tools | `ticket.py` (Kite tool input, dry run), **`closer.py`**, **`guard.py`**, `claude_desktop_config.example.json` (self-hosted kite), **`settings.example.json`** (the hook), `SKILL.md` (Setup A becomes Zerodha; Setup B/IBKR is removed) |
+| trader-broker | Changed, plus 2 new tools | `ticket.py` (Kite tool input, dry run), **`closer.py`**, **`guard.py`**, `mcp.example.json` (self-hosted kite in the project's `.mcp.json`, R7; it replaced `claude_desktop_config.example.json` in B4), **`settings.example.json`** (the hook), `SKILL.md` (Setup A becomes Zerodha; Setup B/IBKR is removed) |
 | trader-alerts | Changed | `alerts.py` (IST, NSE calendar, `.NS`, no Stooq; the 15:00 close alert), `alerts.example.json`, `SKILL.md` |
 | trader-news | **Rebuilt** | `news.py` (Google News IN + NSE announcements; the seen-state from #3 kept), `SKILL.md`, new fixtures |
 | trader-analyst | **Rebuilt** | `facts.py` (NSE results list + Ind-AS XBRL), `metrics.example.json`, `SKILL.md`, new fixtures |
@@ -550,6 +550,15 @@ B0 waits on the owner.
     and readonly hints"). The client sees nothing that marks `place_order` as
     destructive, so its per-tool "Needs approval" setting and the guard hook
     (B4, matched by tool name) are the only gates.
+* **Carried from the B3 review (Fable, 2026-11-12, on `af925b3`):** R37 (the
+  stops' quantities add up: covered = placed stops plus a prepared stop with no
+  result; `stop` refuses more than the entry minus covered; UNPROTECTED says
+  "stops cover N of M"; an exit names every stop) and R38 (the yes record carries
+  the stop leg; `stop --pair` and the UNPROTECTED lines work from the log) are
+  fixed in `b5c88af` and ride in the B4 packet. Fable's B.6 ruling for the
+  guard: while real orders are locked, it blocks every `place_order` except one
+  whose input is exactly a stop prepared today for an entry placed with an
+  order_id.
 * B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].

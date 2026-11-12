@@ -32,6 +32,16 @@ def cfg(**over):
 
 
 LIVE = dict(dry_run=False, b0_proven_on="2026-11-10")
+REAL_GUARD_PROBLEM = ticket.guard_problem
+
+
+def setUpModule():
+    # R7 is tested on its own (GuardRegistered); elsewhere the project counts as having the guard installed.
+    ticket.guard_problem = lambda root: None
+
+
+def tearDownModule():
+    ticket.guard_problem = REAL_GUARD_PROBLEM
 
 
 def orders():
@@ -111,6 +121,50 @@ class B0Gate(unittest.TestCase):
                         continue
                     for written in ('"%s":' % key, '["%s"] =' % key, "%s=" % key, 'setdefault("%s"' % key):
                         self.assertNotIn(written, text, (folder, name, written))
+
+
+class GuardRegistered(unittest.TestCase):
+    # R7: real orders also need trader-broker/guard.py registered for all three kite order tools.
+    HOOK = {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/trader-broker/guard.py\"", "timeout": 30}
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def settings(self, doc):
+        os.makedirs(os.path.join(self.d, ".claude"), exist_ok=True)
+        with open(os.path.join(self.d, ".claude", "settings.json"), "w") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+
+    def test_the_example_settings_register_all_three(self):
+        with open(os.path.join(ROOT, "trader-broker", "settings.example.json")) as fh:
+            self.settings(json.load(fh))
+        self.assertIsNone(REAL_GUARD_PROBLEM(self.d))
+
+    def test_missing_partial_and_bad_settings(self):
+        self.assertIn("there is no", REAL_GUARD_PROBLEM(self.d))
+        self.settings("{not json")
+        self.assertIn("is not valid JSON", REAL_GUARD_PROBLEM(self.d))
+        self.settings({"hooks": {"PreToolUse": [{"matcher": "mcp__kite__place_order", "hooks": [self.HOOK]}]}})
+        self.assertIn("for mcp__kite__modify_order, mcp__kite__cancel_order", REAL_GUARD_PROBLEM(self.d))
+        self.settings({"hooks": {"PreToolUse": [{"matcher": "mcp__kite__.*",
+                                                 "hooks": [dict(self.HOOK, command="python3 other.py")]}]}})
+        self.assertIn("is not registered", REAL_GUARD_PROBLEM(self.d))
+        self.settings({"hooks": {"PreToolUse": [{"matcher": "mcp__kite__.*", "hooks": [self.HOOK]}]}})
+        self.assertIsNone(REAL_GUARD_PROBLEM(self.d))
+        self.settings({"hooks": {"PreToolUse": [{"matcher": "mcp__kite__(", "hooks": [self.HOOK]}]}})
+        self.assertIn("is not registered", REAL_GUARD_PROBLEM(self.d))
+
+    def test_live_needs_the_guard(self):
+        ticket.guard_problem = REAL_GUARD_PROBLEM
+        try:
+            m, line = ticket.mode(cfg(**LIVE), TODAY, self.d)
+        finally:
+            ticket.guard_problem = lambda root: None
+        self.assertEqual(m, "dry_run")
+        self.assertIn("so real orders stay blocked (R7)", line)
 
 
 class CloseGate(unittest.TestCase):
