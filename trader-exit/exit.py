@@ -175,6 +175,32 @@ def utf8_stdio():
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError):
             pass
+
+# B0-provisional (R15): every choice that B0's two real orders may still change, in one place.
+# Not proven on a real account until the owner records b0_proven_on; see PLAN_INDIA_ZERODHA.md R14/R15.
+B0_PROVISIONAL = {
+    "tag": "traderpack",              # Kite order tag on every order this pack places (max 20 chars)
+    "tag_required": True,             # an order without the tag is refused by trader-risk
+    "entry_validity": "DAY",          # entries and stops; TTL is not used until B0 shows how Kite takes it
+    "stop_limit_band_pct": 0.5,       # the stop's SL limit sits this far below its trigger
+    "close_band_pct": 0.5,            # the 3 pm close's limit, under a fresh price of known age
+    "close_band_wide_pct": 1.5,       # ... and under an older one (never for a price of unknown age)
+    "price_sources": ("kite_ltp", "kite_positions", "yahoo"),  # first one present wins
+    "close_schedule": "15:00",        # when the owner's scheduled task runs the 3 pm close
+}
+
+
+def est_charges(qty, buy, sell):
+    """Zerodha intraday equity charges for one round trip, an ESTIMATE (plan F12): brokerage the lower of
+    0.03 % or Rs 20 per executed order, STT 0.025 % on the sell, NSE transaction 0.00307 %, SEBI Rs 10 a
+    crore, stamp duty 0.003 % on the buy, GST 18 % on brokerage + transaction + SEBI. Zerodha's Rs 50 + GST
+    fee for a position it squares off is not in it."""
+    b, s = qty * float(buy), qty * float(sell)
+    brokerage = min(0.0003 * b, 20.0) + min(0.0003 * s, 20.0)
+    txn = 0.0000307 * (b + s)
+    sebi = 0.000001 * (b + s)
+    gst = 0.18 * (brokerage + txn + sebi)
+    return round(brokerage + 0.00025 * s + txn + sebi + 0.00003 * b + gst, 2)
 # ==== end india clock ====
 
 
@@ -584,10 +610,21 @@ def read_universe(path):
     return out
 
 
-def resolve_tick(sym, explicit, universe_path):
-    """(tick Decimal, fo True/False/None, source)."""
+def resolve_tick(sym, explicit, universe_path, fo_flag=None):
+    """(tick Decimal, fo True/False, source). Whether the stock is on the F&O list is never left unknown (R28):
+    it sets Zerodha's square-off (15:12 for the F&O list, 15:25 for the rest) that later tools rely on."""
     uni = read_universe(universe_path)
     fo = uni[sym][1] if sym in uni else None
+    if fo_flag is not None:
+        said = fo_flag == "yes"
+        if fo is not None and said != fo:
+            raise PlanError("--fo %s, but %s says %s is %son the F&O list" % (fo_flag, universe_path, sym,
+                                                                            "" if fo else "not "))
+        fo = said
+    if fo is None and explicit is not None:
+        raise PlanError("%s is not in %s, so whether it is on the F&O list is unknown: add --fo yes or --fo no "
+                        "(Zerodha squares off the F&O list at 15:12, the others at 15:25)"
+                        % (sym, universe_path or DEFAULT_UNIVERSE))
     if explicit is not None:
         t = D(explicit, "--tick")
         if t <= 0:
@@ -678,7 +715,7 @@ def build_plan(a, now_utc):
             raise PlanError("an atr stop needs at least 3 closed %s bars of %s on %s by the entry; found %d"
                             % (info["interval"], info["symbol"], day, len(bars)))
         atr, atr_n = atr_of(bars)
-    tick, fo, tick_source = resolve_tick(info["symbol"], a.tick, a.universe)
+    tick, fo, tick_source = resolve_tick(info["symbol"], a.tick, a.universe, a.fo)
     c = compute(info["entry"], stop_rule, stop_param, target_rule, target_param, info["or_high"], info["or_low"],
                 atr, atr_n, tick)
     flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
@@ -805,6 +842,8 @@ def main(argv=None):
     p.add_argument("--flat-by", help="HH:MM India time (default: config flat_by, 15:00; never later)")
     p.add_argument("--tick", help="the stock's tick size (default: from --universe)")
     p.add_argument("--universe", default=DEFAULT_UNIVERSE, help="trader-scanner's universe.txt, for the tick")
+    p.add_argument("--fo", choices=["yes", "no"],
+                   help="is the stock on the F&O list (needed with --tick for a stock not in --universe)")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON for an atr stop")
     p.add_argument("--now", help='pretend it is this India time, e.g. "2026-11-11 10:15"')

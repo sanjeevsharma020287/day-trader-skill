@@ -497,6 +497,18 @@ B0 waits on the owner.
   * Google News's terms (personal reading only) go into B6's Impact table and
     the README sources line; publishing the pack for others is an owner
     decision at B7.
+* **Carried from the B5/B6 review (Fable, 2026-11-12, on `feb66a3`):** R23 to
+  R27 are fixed in `10623fc` and ride in the B2 packet as their own section:
+  R23 (analyst: NSE unreadable is said, `behind_filings` null), R24 (analyst:
+  "ended" in any case, intimations are not results, an unreadable quarter is
+  counted), R25 (analyst: no currency stays missing), R26 (entry: a trigger
+  read after the cut-off says the window is shut), R27 (scanner: no bar
+  closing before 9:30 counts). **R28 (B2):** `fo` is never null in plan.json
+  (exit asks `--fo yes|no` with `--tick` for a stock not in the universe);
+  an older plan's null counts as F&O, the earlier square-off. **R29:** "Paper
+  trading by default" is replaced by the dry-run Safety block in B2 (scanner,
+  entry, exit, alerts, time machine, budget, risk); trader-broker's SKILL.md
+  follows in B3.
 * B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].

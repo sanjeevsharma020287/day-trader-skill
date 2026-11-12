@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -10,37 +11,22 @@ from _load import load, ROOT, FIX
 size = load("trader-budget", "size")
 
 CFG = os.path.join(ROOT, "trader-budget", "config.example.json")
-PLAN = os.path.join(FIX, "trader-budget", "plan-tsla.json")
+PLAN = os.path.join(FIX, "trader-budget", "plan-mm.json")
+ORDERS = os.path.join(FIX, "trader-risk", "orders-mm.json")
 TARGETS = os.path.join(ROOT, "trader-budget", "targets.example.json")
-TOP5 = os.path.join(FIX, "trader-budget", "berkshire-q2-2026-top5.json")
-NOW = "2026-10-19 10:15"
-TODAY = "2026-10-19"
-REEL_V1 = {"AAPL": 1250, "AXP": 1119, "GOOGL": 823, "KO": 708, "BAC": 600}
-PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53.96}
-# the contract's v2 config, key for key
-CONTRACT_CFG = {
-    "budget": 5000, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_usd": 4000, "min_order_usd": 5,
-    "max_loss_per_trade_usd": 50, "max_daily_loss_usd": 150, "max_trades_per_day": 3, "max_orders_per_day": 10,
-    "min_reward_risk": 1.0, "require_stop": True,
-    "no_entries_before": "09:45", "no_entries_after": "15:30", "flat_by": "15:55",
-    "fractional": False, "broker": "alpaca", "paper": True, "blocked": [],
-    "allow_options": False, "allow_margin": False, "allow_short": False, "pdt_guard": False,
-    "sec_user_agent": "Your Name you@example.com",
-}
-# v1's rules, for the weights mode tests
-V1 = {"budget": 5000, "cash_buffer_pct": 10, "max_position_pct": 25, "max_order_usd": 2000, "min_order_usd": 5,
-      "fractional": True, "paper": True, "blocked": []}
+NOW = "2026-11-11 10:16"
+TODAY = "2026-11-11"
+R = "₹"
+# SYNTHETIC prices and ticks for the weights examples (not market data)
+PRICES = {"RELIANCE": 1500.0, "HDFCBANK": 1000.0, "INFY": 1600.0, "TCS": 3200.0, "SBIN": 950.0}
+UNIVERSE = "".join("%s|%s|0.1|FO\n" % (s, s) for s in PRICES)
+# A fresh last price for M&M, 30 seconds before NOW (10:15:30 India time is 04:45:30 UTC)
+LAST = {"price": 3428.5, "source": "yahoo", "at": "2026-11-11T04:45:30Z", "age_s": 30}
 
 
 def cfg(**over):
     with open(CFG) as fh:
         c = json.load(fh)
-    c.update(over)
-    return c
-
-
-def v1(**over):
-    c = dict(V1)
     c.update(over)
     return c
 
@@ -52,15 +38,6 @@ def plan(**over):
     return p
 
 
-def rows(path):
-    with open(path) as fh:
-        return size.parse_weights(json.load(fh))
-
-
-def dollars(result):
-    return {p["ticker"]: p["dollars"] for p in result["positions"]}
-
-
 def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -68,306 +45,273 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-def prices_doc(price, quote_time="2026-10-19T14:52:13Z"):
-    return {"as_of": quote_time, "source": "yahoo", "prices": {"TSLA": price},
-            "detail": {"TSLA": {"prev_close": 354.72, "time": quote_time, "source": "yahoo"}}}
+def prices_doc(price=3428.5, quote_time="2026-11-11T04:45:30Z", source="yahoo"):
+    d = {"as_of": quote_time, "prices": {"M&M": price}}
+    if quote_time:
+        d["detail"] = {"M&M": {"time": quote_time, "source": source}}
+    return d
+
+
+class Charges(unittest.TestCase):
+    # Worked by hand from the plan's F12 rates (brokerage min(0.03 %, Rs 20) a side, STT 0.025 % sell,
+    # NSE 0.00307 %, SEBI Rs 10/crore, stamp 0.003 % buy, GST 18 % on brokerage + NSE + SEBI).
+    def test_the_estimate(self):
+        self.assertEqual(size.est_charges(32, 3427.0, 3367.4), 85.56)
+        self.assertEqual(size.est_charges(33, 3427.0, 3367.4), 86.76)
+        self.assertEqual(size.est_charges(1, 100, 99), 0.11)               # brokerage under the Rs 20 cap
+        self.assertEqual(size.est_charges(1000, 3000, 2990), 1108.76)      # brokerage capped at Rs 20 a side
+
+    def test_b0_provisional_is_one_named_set(self):
+        self.assertEqual(size.B0_PROVISIONAL["tag"], "traderpack")
+        self.assertEqual(size.B0_PROVISIONAL["entry_validity"], "DAY")
+        self.assertEqual(size.B0_PROVISIONAL["stop_limit_band_pct"], 0.5)
 
 
 class TheReel(unittest.TestCase):
-    """$5,000, 10% buffer, $50 max loss, TSLA risk 5.86 -> 8 shares, $2,913.44, max loss $46.88."""
-
     def test_config_example_is_the_contract(self):
-        with open(CFG) as fh:
-            self.assertEqual(json.load(fh), CONTRACT_CFG)
+        self.assertEqual(cfg(), dict(size.DEFAULTS, budget=200000))
+        self.assertTrue(cfg()["dry_run"])
 
-    def test_tsla_is_8_shares_bound_by_the_max_loss(self):
-        s = size.size_trade(plan(), cfg(), today=TODAY)
-        self.assertEqual(s["qty"], 8)
-        self.assertEqual(s["bound_by"], "max loss")
-        self.assertEqual(s["risk_per_share"], 5.86)
-        self.assertEqual(s["cost"], 2913.44)
-        self.assertEqual(s["max_loss"], 46.88)
-        self.assertEqual(s["reward_risk"], 1.0)
-        self.assertEqual(s["cash_buffer"], 500)
-        self.assertEqual([(l["name"], l["shares"]) for l in s["limits"]],
-                         [("max loss", 8), ("position cap", 10), ("max order", 10), ("cash", 12)])
-        self.assertEqual([l["name"] for l in s["limits"] if l["binds"]], ["max loss"])
+    def test_mm_is_32_shares_bound_by_the_max_loss(self):
+        s = size.size_trade(plan(), cfg(), last=LAST, today=TODAY)
         self.assertIsNone(s["refusal"])
+        self.assertEqual((s["entry"], s["stop"], s["stop_limit"], s["target"]), (3427.0, 3384.4, 3367.4, 3469.6))
+        self.assertEqual((s["risk_per_share"], s["reward_risk"]), (59.6, 1.0))
+        self.assertEqual((s["qty"], s["bound_by"], s["cost"]), (32, "max loss", 109664.0))
+        self.assertEqual((s["charges_est"], s["max_loss"]), (85.56, 1992.76))   # 32 x 59.60 + 85.56
+        shares = {l["name"]: l["shares"] for l in s["limits"]}
+        self.assertEqual(shares, {"max loss": 32, "position cap": 43, "max order": 58, "cash": 52})
 
-    def test_the_bracket_order(self):
-        o = size.bracket_order(size.size_trade(plan(), cfg(), today=TODAY))
-        why = o.pop("why")
-        self.assertEqual(o, {
-            "symbol": "TSLA", "side": "buy", "qty": "8", "type": "market", "time_in_force": "day",
-            "order_class": "bracket", "take_profit_limit_price": "370.04", "stop_loss_stop_price": "358.32",
-            "plan": {"entry": 364.18, "stop": 358.32, "target": 370.04, "risk_per_share": 5.86,
-                     "max_loss": 46.88, "setup": "orb", "entry_time": "10:15 AM", "flat_by": "15:55"}})
-        self.assertIn("bound by your $50 max loss", why)
-        self.assertIn("$46.88", why)
+    def test_the_kite_pair(self):
+        s = size.size_trade(plan(), cfg(), last=LAST, today=TODAY)
+        e, st = size.kite_pair(s, "P1")
+        self.assertEqual({k: e[k] for k in ("variety", "exchange", "tradingsymbol", "transaction_type", "quantity",
+                                            "product", "order_type", "price", "validity", "tag")},
+                         {"variety": "regular", "exchange": "NSE", "tradingsymbol": "M&M", "transaction_type": "BUY",
+                          "quantity": 32, "product": "MIS", "order_type": "LIMIT", "price": 3427.0,
+                          "validity": "DAY", "tag": "traderpack"})
+        self.assertNotIn("trigger_price", e)
+        self.assertEqual((st["transaction_type"], st["order_type"], st["quantity"], st["trigger_price"], st["price"],
+                          st["product"]), ("SELL", "SL", 32, 3384.4, 3367.4, "MIS"))
+        self.assertEqual((e["leg"], st["leg"], e["pair"], st["pair"]), ("entry", "stop", "P1", "P1"))
+        self.assertEqual((e["tick"], e["fo"]), (0.1, True))
+        self.assertEqual(e["price_source"]["last_source"], "yahoo")
+        self.assertEqual(e["price_source"]["last_age_s"], 30)
+        self.assertIsInstance(e["quantity"], int)
 
     def test_the_fixture_orders_file_is_what_it_writes(self):
-        with open(os.path.join(FIX, "trader-risk", "orders-tsla.json")) as fh:
-            fixture = json.load(fh)["orders"][0]
-        self.assertEqual(size.bracket_order(size.size_trade(plan(), cfg(), today=TODAY)), fixture)
+        d = tempfile.mkdtemp()
+        try:
+            out = os.path.join(d, "orders.json")
+            pp = os.path.join(d, "prices.json")
+            with open(pp, "w") as fh:
+                json.dump(prices_doc(), fh)
+            code, _, err = run(["--plan", PLAN, "--config", CFG, "--prices", pp, "--portfolio", "none.json",
+                                "--now", NOW, "--write", out])
+            self.assertEqual(code, 0, err)
+            with open(out, encoding="utf-8") as fh:
+                got = json.load(fh)
+            with open(ORDERS, encoding="utf-8") as fh:
+                want = json.load(fh)
+            self.assertEqual(got["orders"], want["orders"])
+            self.assertIs(got["dry_run"], True)
+            self.assertEqual(got["orders"][0]["pair"], "M&M-2026-11-11-101600")
+        finally:
+            shutil.rmtree(d)
 
-    def test_a_limit_order(self):
-        o = size.bracket_order(size.size_trade(plan(), cfg(), limit=364.18, today=TODAY))
-        self.assertEqual((o["type"], o["limit_price"], o["qty"]), ("limit", "364.18", "8"))
-        s = size.size_trade(plan(), cfg(), limit=364.00, today=TODAY)
-        self.assertEqual((s["risk_per_share"], s["qty"], s["max_loss"]), (5.68, 8, 45.44))
-        self.assertEqual(size.bracket_order(s)["limit_price"], "364.00")
+    def test_a_limit_of_your_own_on_the_tick(self):
+        s = size.size_trade(plan(), cfg(min_reward_risk=0.5), limit=3430.05, last=LAST, today=TODAY)
+        self.assertEqual((s["entry"], s["entry_from"]), (3430.1, "limit"))   # 3430.05 to the 0.1 tick
+        s = size.size_trade(plan(), cfg(min_reward_risk=0.5), limit=3430.0, last=LAST, today=TODAY)
+        self.assertEqual((s["risk_per_share"], s["qty"], s["charges_est"], s["max_loss"]), (62.6, 30, 83.17, 1961.17))
+        s = size.size_trade(plan(), cfg(), limit=3430.0, last=LAST, today=TODAY)
+        self.assertIn("reward:risk 0.87", s["refusal"])                       # 39.60 / 45.60
 
-    def test_cli_writes_one_bracket_order(self):
-        with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "trader", "orders.json")
-            code, text, _ = run(["--plan", PLAN, "--config", CFG, "--portfolio", os.path.join(d, "none"),
-                                 "--now", NOW, "--write", out])
-            self.assertEqual(code, 0)
-            self.assertIn("Size: 8 shares of TSLA = $2,913.44 at 364.18", text)
-            self.assertIn("8 x 5.86 = $46.88", text)
-            self.assertIn("<- binds", text)
-            self.assertIn("not financial advice", text)
-            with open(out) as fh:
-                doc = json.load(fh)
-            self.assertEqual(doc["status"], "proposed")
-            self.assertIs(doc["paper"], True)
-            self.assertEqual(doc["created_at"], "2026-10-19T14:15:00Z")
-            self.assertEqual(len(doc["orders"]), 1)
-            self.assertEqual(doc["orders"][0]["plan"]["max_loss"], 46.88)
-
-    def test_cli_json_and_limit(self):
-        code, text, _ = run(["--plan", PLAN, "--config", CFG, "--portfolio", "/nonexistent", "--now", NOW,
-                             "--limit", "--json"])
-        self.assertEqual(code, 0)
-        out = json.loads(text)
-        self.assertEqual(out["sizing"]["qty"], 8)
-        self.assertEqual(out["orders"][0]["limit_price"], "364.18")
+    def test_report_words(self):
+        s = size.size_trade(plan(), cfg(), last=LAST, today=TODAY)
+        text = size.plan_report(s, size.kite_pair(s, "P1"))
+        self.assertIn("Max loss at the stop: 32 x 59.60 + %s85.56 charges (estimate) = %s1,992.76." % (R, R), text)
+        self.assertIn("SL trigger 3384.40 limit 3367.40", text)
+        self.assertIn("Zerodha's %s50 + GST fee for a position it squares off is not in it." % R, text)
+        self.assertIn("nothing has been placed", text)
 
 
 class PlanRules(unittest.TestCase):
     def test_zero_shares_is_a_plain_refusal(self):
-        s = size.size_trade(plan(stop=300.0), cfg(), today=TODAY)
+        s = size.size_trade(plan(), cfg(max_loss_per_trade_inr=50), last=LAST, today=TODAY)
         self.assertEqual(s["qty"], 0)
-        self.assertIn("more than your $50 max loss per trade", s["refusal"])
-        self.assertIsNone(size.bracket_order(s))
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "plan.json")
-            with open(p, "w") as fh:
-                json.dump(plan(stop=300.0), fh)
-            out = os.path.join(d, "orders.json")
-            code, text, _ = run(["--plan", p, "--config", CFG, "--portfolio", os.path.join(d, "none"),
-                                 "--now", NOW, "--write", out])
-            self.assertEqual(code, 1)
-            self.assertIn("No order:", text)
-            self.assertFalse(os.path.exists(out))
+        self.assertIn("one share risks %s59.60 plus charges" % R, s["refusal"])
+        self.assertEqual(size.kite_pair(s, "P"), [])
 
     def test_each_limit_can_bind(self):
-        self.assertEqual(size.size_trade(plan(), cfg(max_order_usd=1000), today=TODAY)["bound_by"], "max order")
-        s = size.size_trade(plan(), cfg(max_position_pct=20), today=TODAY)
-        self.assertEqual((s["qty"], s["bound_by"]), (2, "position cap"))
-        s = size.size_trade(plan(), cfg(), cash=1200, today=TODAY)
-        self.assertEqual((s["qty"], s["bound_by"], s["cash_available"]), (1, "cash", 700))
-        s = size.size_trade(plan(), cfg(max_loss_per_trade_usd=100), today=TODAY)
-        self.assertEqual((s["qty"], s["bound_by"]), (10, "position cap"))
+        s = size.size_trade(plan(), cfg(max_position_pct=10), last=LAST, today=TODAY)
+        self.assertEqual((s["qty"], s["bound_by"]), (5, "position cap"))    # 20,000 / 3427
+        s = size.size_trade(plan(), cfg(max_order_inr=10000), last=LAST, today=TODAY)
+        self.assertEqual((s["qty"], s["bound_by"]), (2, "max order"))       # 10,000 / 3427
+        s = size.size_trade(plan(), cfg(), last=LAST, cash=50000, today=TODAY)
+        self.assertEqual((s["qty"], s["bound_by"]), (8, "cash"))            # (50,000 - 20,000) / 3427
 
-    def test_a_fresh_higher_price_means_a_bigger_risk(self):
-        s = size.size_trade(plan(), cfg(min_reward_risk=0), price=366.475, today=TODAY)
-        self.assertEqual((s["entry"], s["entry_from"], s["risk_per_share"]), (366.48, "price", 8.16))
-        self.assertEqual((s["qty"], s["max_loss"], s["reward_risk"]), (6, 48.96, 0.44))
-        self.assertIsNone(s["refusal"])
-        s = size.size_trade(plan(), cfg(), price=366.475, today=TODAY)
-        self.assertIn("reward:risk 0.44 (target 370.04, entry 366.48, stop 358.32) is under your minimum 1",
-                      s["refusal"])
-        self.assertIsNone(size.bracket_order(s))
-        lower = size.size_trade(plan(), cfg(), price=363.00, today=TODAY)
-        self.assertEqual((lower["entry"], lower["qty"]), (364.18, 8))
+    def test_no_fresh_price_is_no_order(self):
+        s = size.size_trade(plan(), cfg(), last=None, today=TODAY)
+        self.assertIn("no last price for M&M under 15 minutes old", s["refusal"])
+        self.assertEqual(size.kite_pair(s, "P"), [])
 
-    def test_prices_file_is_used_only_when_fresh(self):
-        with tempfile.TemporaryDirectory() as d:
+    def test_the_cli_reads_the_price_with_its_source_and_age(self):
+        d = tempfile.mkdtemp()
+        try:
             pp = os.path.join(d, "prices.json")
+            args = ["--plan", PLAN, "--config", CFG, "--prices", pp, "--portfolio", "none.json", "--now", NOW]
             with open(pp, "w") as fh:
-                json.dump(prices_doc(366.475), fh)
-            base = ["--plan", PLAN, "--config", CFG, "--portfolio", os.path.join(d, "none"), "--prices", pp, "--json"]
-            code, text, _ = run(base + ["--now", "2026-10-19 10:55"])
-            out = json.loads(text)
-            self.assertEqual((code, out["sizing"]["qty"], out["orders"]), (1, 6, []))
-            self.assertIn("above the plan's entry", out["notes"][0])
-            out = json.loads(run(base + ["--now", "2026-10-19 11:30"])[1])
-            self.assertEqual(out["sizing"]["qty"], 8)
-            self.assertIn("not used", out["notes"][0])
+                json.dump(prices_doc(source="kite_ltp"), fh)
+            code, text, _ = run(args)
+            self.assertEqual(code, 0)
+            self.assertIn("Last price %s3,428.50 (kite_ltp, 30 s old)." % R, text)
+            with open(pp, "w") as fh:
+                json.dump(prices_doc(quote_time="2026-11-11T04:25:00Z"), fh)        # 9:55, 21 minutes old
+            code, text, _ = run(args)
+            self.assertEqual(code, 1)
+            self.assertIn("from 2026-11-11 09:55 India time: not used (older than 15 minutes", text)
+            self.assertIn("No order: no last price for M&M", text)
+            with open(pp, "w") as fh:
+                json.dump({"prices": {"M&M": 3428.5}}, fh)                          # no time anywhere
+            code, text, _ = run(args)
+            self.assertEqual(code, 1)
+            self.assertIn("is of unknown age: not used", text)
+        finally:
+            shutil.rmtree(d)
 
-    def test_the_portfolio_cash_caps_the_size(self):
-        with tempfile.TemporaryDirectory() as d:
-            pf = os.path.join(d, "portfolio.json")
-            with open(pf, "w") as fh:
-                json.dump({"cash": 1200, "positions": []}, fh)
-            out = json.loads(run(["--plan", PLAN, "--config", CFG, "--portfolio", pf, "--now", NOW, "--json"])[1])
-            self.assertEqual((out["sizing"]["qty"], out["sizing"]["bound_by"]), (1, "cash"))
+    def test_reward_risk_and_minimum_order(self):
+        s = size.size_trade(plan(), cfg(min_reward_risk=1.5), last=LAST, today=TODAY)
+        self.assertIn("reward:risk 1.00", s["refusal"])
+        s = size.size_trade(plan(), cfg(min_order_inr=200000), last=LAST, today=TODAY)
+        self.assertIn("under your %s2,00,000 minimum order" % R, s["refusal"])
 
     def test_bad_plans(self):
-        for p, word in ((plan(stop=365.0), "not below the entry"),
-                        (plan(target=360.0), "already happened"),
-                        (plan(target=None), "positive target"),
-                        (plan(side="sell"), "long (buy) day trades only"),
-                        (plan(symbol=""), "no symbol")):
+        for p, words in ((plan(side="sell"), "long (buy) day trades only"),
+                         (plan(tick=None), "no tick size for M&M"),
+                         (plan(stop=3430.0), "is not below the entry"),
+                         (plan(target=3420.0), "the move has already happened"),
+                         (plan(date="2026-11-10"), "the plan is for 2026-11-10 and today is 2026-11-11"),
+                         (plan(symbol=""), "no symbol"),
+                         (plan(entry=None), "a positive entry")):
             with self.assertRaises(size.SizeError) as e:
-                size.size_trade(p, cfg(), today=TODAY)
-            self.assertIn(word, str(e.exception))
+                size.size_trade(p, cfg(), last=LAST, today=TODAY)
+            self.assertIn(words, str(e.exception))
         with self.assertRaises(size.SizeError) as e:
-            size.size_trade(plan(), cfg(), price=371.00, today=TODAY)
-        self.assertIn("already happened", str(e.exception))
-        with self.assertRaises(size.SizeError) as e:
-            size.size_trade(plan(), cfg(blocked=["tsla"]), today=TODAY)
+            size.size_trade(plan(), cfg(blocked=["m&m"]), last=LAST, today=TODAY)
         self.assertIn("blocked list", str(e.exception))
-        with self.assertRaises(size.SizeError) as e:
-            size.size_trade(plan(), cfg(), today="2026-10-20")
-        self.assertIn("make a new plan", str(e.exception))
 
-    def test_under_the_minimum_order(self):
-        cheap = plan(symbol="ABC", entry=4.0, stop=3.0, target=5.0)
-        s = size.size_trade(cheap, cfg(max_loss_per_trade_usd=1), today=TODAY)
-        self.assertEqual(s["qty"], 1)
-        self.assertIn("under your $5 minimum order", s["refusal"])
-        self.assertIsNone(size.bracket_order(s))
+    def test_an_older_plan_without_the_fo_flag_counts_as_fo(self):
+        p = plan()
+        del p["fo"]
+        s = size.size_trade(p, cfg(), last=LAST, today=TODAY)
+        self.assertEqual((s["fo"], s["fo_unknown"]), (True, True))
+        self.assertIn("F&O list unknown (an older plan): counted as F&O, square-off 15:12",
+                      size.plan_report(s, size.kite_pair(s, "P")))
+        s = size.size_trade(plan(fo=False), cfg(), last=LAST, today=TODAY)
+        self.assertEqual((s["fo"], s["fo_unknown"]), (False, False))
 
-    def test_missing_plan_and_weights_only_flags(self):
-        code, _, err = run(["--plan", "/nonexistent/plan.json", "--config", CFG, "--now", NOW])
-        self.assertEqual(code, 1)
-        self.assertIn("no plan", err)
-        code, _, err = run(["--plan", PLAN, "--config", CFG, "--now", NOW, "--top", "2"])
-        self.assertEqual(code, 1)
-        self.assertIn("--weights", err)
-        code, _, err = run(["--plan", PLAN, "--config", CFG, "--now", "tomorrow"])
-        self.assertEqual(code, 1)
-        self.assertNotIn("Traceback", err)
+    def test_an_old_us_config_is_refused_by_name(self):
+        d = tempfile.mkdtemp()
+        try:
+            c = os.path.join(d, "config.json")
+            for bad, words in (({"paper": True}, "'paper' (use dry_run)"),
+                               ({"max_loss_per_trade_usd": 50}, "'max_loss_per_trade_usd' (use max_loss_per_trade_inr)"),
+                               ({"pdt_guard": False}, "'pdt_guard'"),
+                               ({"broker": "alpaca"}, "broker 'alpaca': this pack trades on NSE through Zerodha only")):
+                with open(c, "w") as fh:
+                    json.dump(dict(cfg(), **bad), fh)
+                code, _, err = run(["--plan", PLAN, "--config", c, "--now", NOW])
+                self.assertEqual(code, 1)
+                self.assertIn(words, err)
+        finally:
+            shutil.rmtree(d)
+
+    def test_bare_limit_is_the_plans_entry_and_errors_are_one_line(self):
+        code, _, err = run(["--plan", PLAN, "--config", CFG, "--limit", "abc", "--now", NOW])
+        self.assertEqual((code, err.strip()), (1, "size.py: --limit wants a price, like --limit 3428.5"))
+        code, _, err = run(["--plan", "nope.json", "--config", CFG, "--now", NOW])
+        self.assertIn("no plan (run trader-exit first", err)
+        code, _, err = run(["--plan", PLAN, "--config", CFG, "--now", "soon"])
+        self.assertIn("--now wants a time like", err)
+        code, text, _ = run(["--plan", PLAN, "--config", CFG, "--limit", "--now", NOW, "--json"])
+        self.assertEqual(json.loads(text)["sizing"]["entry_from"], "plan")
 
 
 class WeightsMode(unittest.TestCase):
-    """v1's split, kept behind --weights / --targets: $5,000, 10% cash, 25% cap."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.uni = os.path.join(self.d, "universe.txt")
+        with open(self.uni, "w") as fh:
+            fh.write(UNIVERSE)
+        with open(TARGETS) as fh:
+            self.rows = size.parse_weights(json.load(fh))
 
-    def check_reel(self, r):
-        self.assertEqual(dollars(r), REEL_V1)
-        self.assertEqual(r["cash_buffer"], 500)
-        self.assertEqual(r["invested"], 4500)
-        self.assertEqual(r["idle"], 0)
-        self.assertEqual(r["cap"], 1250)
-        self.assertEqual([p["ticker"] for p in r["positions"] if p["capped"]], ["AAPL"])
+    def tearDown(self):
+        shutil.rmtree(self.d)
 
-    def test_from_the_raw_weights(self):
-        self.check_reel(size.size(rows(TOP5), v1()))
+    def shares(self, result):
+        return {p["symbol"]: p["shares"] for p in result["positions"]}
 
-    def test_from_the_renormalised_weights_file(self):
-        self.check_reel(size.size(rows(TARGETS), v1()))
+    def test_the_example_split(self):
+        r = size.size(self.rows, cfg(), prices=PRICES)
+        # slices 54,000 / 45,000 / 36,000 / 27,000 / 18,000; floors, then one more SBIN and one more INFY
+        self.assertEqual(self.shares(r), {"RELIANCE": 36, "HDFCBANK": 45, "INFY": 23, "TCS": 8, "SBIN": 19})
+        self.assertEqual((r["invested"], r["idle"], r["cash_buffer"]), (179450.0, 550.0, 20000.0))
 
-    def test_from_inline_weights(self):
-        w = size.parse_weights(size.weights_from_arg("AAPL=22.04,AXP=17.14,GOOGL=12.62,KO=10.86,BAC=9.20"))
-        self.check_reel(size.size(w, v1()))
-
-    def test_renormalised_weights(self):
-        r = size.size(rows(TOP5), v1())
-        shown = {p["ticker"]: round(p["weight"], 1) for p in r["positions"]}
-        self.assertEqual(shown, {"AAPL": 30.7, "AXP": 23.9, "GOOGL": 17.6, "KO": 15.1, "BAC": 12.8})
-
-    def test_one_decimal_weights_stay_within_a_dollar(self):
-        w = size.parse_weights({"AAPL": 30.7, "AXP": 23.9, "GOOGL": 17.6, "KO": 15.1, "BAC": 12.8})
-        r = size.size(w, v1())
-        self.assertEqual(r["invested"], 4500)
-        self.assertEqual(dollars(r)["AAPL"], 1250)
-        for t, v in dollars(r).items():
-            self.assertLessEqual(abs(v - REEL_V1[t]), 1.0, t)
-
-    def test_orders_are_place_stock_order_shaped(self):
-        r = size.size(rows(TOP5), v1())
-        orders = size.orders_from(r, "a 13F")
-        self.assertEqual(orders[0], {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market",
-                                     "time_in_force": "day", "why": orders[0]["why"]})
-        self.assertIn("capped at 25%", orders[0]["why"])
-        for o in orders:
-            self.assertIsInstance(o["notional"], str)
-            self.assertNotIn("qty", o)
-        self.assertEqual([o["notional"] for o in orders], ["1250", "1119", "823", "708", "600"])
-
-    def test_cents_mode_keeps_the_total(self):
-        r = size.size(rows(TOP5), v1(), cents=True)
-        d = dollars(r)
-        self.assertEqual(d["AAPL"], 1250)
-        self.assertAlmostEqual(sum(d.values()), 4500, places=2)
-        self.assertAlmostEqual(d["AXP"], 1118.13, places=2)
-        self.assertEqual(size.orders_from(r)[1]["notional"], "1118.13")
+    def test_orders_are_kite_limits_on_the_tick(self):
+        r = size.size(self.rows, cfg(), prices=dict(PRICES, TCS=3200.07))
+        orders = size.orders_from(r, size.read_universe(self.uni), "the example")
+        self.assertEqual(len(orders), 5)
+        o = [x for x in orders if x["tradingsymbol"] == "TCS"][0]
+        self.assertEqual((o["transaction_type"], o["order_type"], o["product"], o["price"], o["quantity"], o["tag"]),
+                         ("BUY", "LIMIT", "MIS", 3200.0, 8, "traderpack"))   # 3200.07 down to the 0.1 tick
+        self.assertIn("weights from the example", o["why"])
 
     def test_cap_redistributes_until_nobody_is_over(self):
-        w = size.parse_weights({"A": 60, "B": 30, "C": 10})
-        r = size.size(w, {"budget": 1000, "cash_buffer_pct": 0, "max_position_pct": 40, "min_order_usd": 1})
-        self.assertEqual(dollars(r), {"A": 400, "B": 400, "C": 200})
-        self.assertEqual(sorted(p["ticker"] for p in r["positions"] if p["capped"]), ["A", "B"])
-
-    def test_everything_capped_leaves_money_idle(self):
-        w = size.parse_weights({"AAPL": 50, "KO": 50})
-        r = size.size(w, v1())
-        self.assertEqual(dollars(r), {"AAPL": 1250, "KO": 1250})
-        self.assertEqual(r["idle"], 2000)
-        self.assertIn("every stock is at its cap", size.report(r, size.orders_from(r)))
+        r = size.size(self.rows, cfg(max_position_pct=20), prices=PRICES)
+        self.assertEqual(self.shares(r), {"RELIANCE": 26, "HDFCBANK": 40, "INFY": 25, "TCS": 11, "SBIN": 27})
+        self.assertEqual({p["symbol"] for p in r["positions"] if p["capped"]}, {"RELIANCE", "HDFCBANK", "INFY"})
+        self.assertEqual((r["invested"], r["idle"]), (179850.0, 150.0))
 
     def test_slices_under_the_minimum_are_dropped_and_shared_out(self):
-        w = size.parse_weights({"A": 90, "B": 7, "C": 3})
-        r = size.size(w, {"budget": 100, "cash_buffer_pct": 10, "max_position_pct": 100, "min_order_usd": 5})
-        self.assertNotIn("C", dollars(r))
-        self.assertEqual(sum(dollars(r).values()), 90)
-        self.assertTrue(all(v >= 5 for v in dollars(r).values()))
-        self.assertEqual(r["dropped"][0]["ticker"], "C")
+        r = size.size(self.rows, cfg(min_order_inr=20000), prices=PRICES)
+        self.assertEqual(r["dropped"], [{"symbol": "SBIN",
+                                         "reason": "its slice (%s18,050) is under your %s20,000 minimum order" % (R, R)}])
+        self.assertEqual(self.shares(r), {"RELIANCE": 40, "HDFCBANK": 51, "INFY": 25, "TCS": 9})
 
-    def test_blocked_tickers_are_dropped_first(self):
-        r = size.size(rows(TOP5), v1(blocked=["ko"]))
-        self.assertNotIn("KO", dollars(r))
-        self.assertEqual(r["invested"], 4500)
-        self.assertIn("blocked", r["dropped"][0]["reason"])
-
-    def test_top_n(self):
-        r = size.size(rows(TOP5), v1(max_position_pct=100), top=2)
-        self.assertEqual(sorted(dollars(r)), ["AAPL", "AXP"])
-
-    def test_whole_shares_need_prices(self):
+    def test_blocked_top_and_errors(self):
+        r = size.size(self.rows, cfg(blocked=["tcs"]), prices=PRICES)
+        self.assertIn({"symbol": "TCS", "reason": "on your blocked list"}, r["dropped"])
+        r = size.size(self.rows, cfg(), prices=PRICES, top=2)
+        self.assertEqual(sorted(self.shares(r)), ["HDFCBANK", "RELIANCE"])
+        with self.assertRaises(size.SizeError) as e:
+            size.size(self.rows, cfg(), prices={"RELIANCE": 1500.0})
+        self.assertIn("whole shares need a price for: HDFCBANK, INFY, TCS, SBIN", str(e.exception))
+        with self.assertRaises(size.SizeError) as e:
+            size.orders_from(size.size(self.rows, cfg(), prices=PRICES), {"RELIANCE": (0.1, True)})
+        self.assertIn("no tick size for HDFCBANK, INFY, TCS, SBIN", str(e.exception))
         with self.assertRaises(size.SizeError):
-            size.size(rows(TOP5), v1(fractional=False))
+            size.size(self.rows + self.rows[:1], cfg(), prices=PRICES)
         with self.assertRaises(size.SizeError):
-            size.size(rows(TOP5), cfg())          # the v2 example config is whole shares
-
-    def test_whole_shares_with_prices(self):
-        r = size.size(rows(TOP5), v1(fractional=False), prices=PRICES)
-        self.assertTrue(r["whole_shares"])
-        for p in r["positions"]:
-            self.assertEqual(p["shares"], int(p["shares"]))
-            self.assertAlmostEqual(p["dollars"], p["shares"] * PRICES[p["ticker"]], places=2)
-            self.assertLessEqual(p["dollars"], 1250)
-        self.assertAlmostEqual(r["invested"] + r["idle"], 4500, places=2)
-        self.assertLess(r["idle"], min(PRICES.values()) * 2)
-        orders = size.orders_from(r)
-        self.assertTrue(all("qty" in o and "notional" not in o for o in orders))
-
-    def test_no_budget_and_duplicates_are_errors(self):
-        with self.assertRaises(size.SizeError):
-            size.size(rows(TOP5), {"cash_buffer_pct": 10})
-        with self.assertRaises(size.SizeError):
-            size.size([{"ticker": "KO", "name": "", "weight": 1}, {"ticker": "KO", "name": "", "weight": 2}], v1())
+            size.size(self.rows, cfg(budget=None), prices=PRICES)
 
     def test_cli(self):
-        with tempfile.TemporaryDirectory() as d:
-            c = os.path.join(d, "config.json")
-            with open(c, "w") as fh:
-                json.dump(v1(), fh)
-            out = os.path.join(d, "trader", "orders.json")
-            code, text, _ = run(["--targets", TARGETS, "--config", c, "--write", out])
-            self.assertEqual(code, 0)
-            self.assertIn("left idle", text)
-            self.assertIn("require_stop", text)
-            with open(out) as fh:
-                doc = json.load(fh)
-            self.assertEqual([o["symbol"] for o in doc["orders"]], ["AAPL", "AXP", "GOOGL", "KO", "BAC"])
-            code, text, _ = run(["--targets", TARGETS, "--config", c, "--json"])
-            self.assertEqual(json.loads(text)["result"]["idle"], 0)
-            code, _, err = run(["--targets", "/nonexistent/targets.json", "--config", c])
-            self.assertEqual(code, 1)
-            self.assertIn("no weights file", err)
+        pp = os.path.join(self.d, "prices.json")
+        with open(pp, "w") as fh:
+            json.dump({"prices": PRICES}, fh)
+        out = os.path.join(self.d, "orders.json")
+        code, text, err = run(["--targets", TARGETS, "--config", CFG, "--prices", pp, "--universe", self.uni,
+                               "--write", out, "--whole-shares", "--cents"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("BUY 36 RELIANCE, LIMIT 1500.00, MIS, DAY", text)
+        self.assertIn("These buys have no stop", text)
+        with open(out, encoding="utf-8") as fh:
+            self.assertEqual(len(json.load(fh)["orders"]), 5)
+        code, text, _ = run(["--weights", "RELIANCE=1,SBIN=1", "--config", CFG, "--prices", pp,
+                             "--universe", self.uni, "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(text)["orders"]), 2)
 
 
 if __name__ == "__main__":

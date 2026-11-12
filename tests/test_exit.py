@@ -218,13 +218,27 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no tick size for M&M", err)
         self.assertIn("scan.py universe", err)
-        code, text, _ = self.plan("--symbol", "M&M", "--entry", "3427", "--or-high", "3421.1", "--or-low", "3347.7",
-                                  "--tick", "0.05", "--json")
+        args = ("--symbol", "M&M", "--entry", "3427", "--or-high", "3421.1", "--or-low", "3347.7", "--tick", "0.05")
+        code, _, err = self.plan(*args)                          # R28: the F&O list is never left unknown
+        self.assertEqual(code, 1)
+        self.assertIn("whether it is on the F&O list is unknown: add --fo yes or --fo no", err)
+        code, text, _ = self.plan(*(args + ("--fo", "yes", "--json")))
         p = json.loads(text)
-        self.assertEqual((p["tick"], p["fo"], p["stop"]), (0.05, None, 3384.4))
+        self.assertEqual((p["tick"], p["fo"], p["stop"]), (0.05, True, 3384.4))
+        code, text, _ = self.plan(*(args + ("--fo", "no", "--json")))
+        self.assertIs(json.loads(text)["fo"], False)
         code, _, err = self.plan("--symbol", "INFY", "--entry", "1155", "--stop", "pct:1",
                                  "--universe", os.path.join(self.d, "nope.txt"))
         self.assertIn("no tick size for INFY", err)
+
+    def test_fo_must_agree_with_the_universe(self):
+        base = ("--symbol", "M&M", "--entry", "3427", "--or-high", "3421.1", "--or-low", "3347.7")
+        code, _, err = self.plan(*(base + ("--fo", "no")))
+        self.assertEqual(code, 1)
+        self.assertIn("--fo no, but trader", err)
+        self.assertIn("says M&M is on the F&O list", err)
+        code, text, _ = self.plan(*(base + ("--fo", "yes", "--json")))
+        self.assertIs(json.loads(text)["fo"], True)
 
     def test_atr_stop_reads_bars(self):
         self.write(os.path.join("trader", "entry.json"), REEL_ENTRY)

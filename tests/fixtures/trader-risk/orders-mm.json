@@ -1,0 +1,81 @@
+{
+  "created_by": "trader-budget",
+  "created_at": "2026-11-11T04:46:00Z",
+  "status": "proposed",
+  "dry_run": true,
+  "note": "Proposals only. Nothing is placed until trader-risk passes each order and you say yes to it in the chat.",
+  "source": "trader/plan.json (M&M orb 2026-11-11)",
+  "orders": [
+    {
+      "variety": "regular",
+      "exchange": "NSE",
+      "tradingsymbol": "M&M",
+      "quantity": 32,
+      "product": "MIS",
+      "validity": "DAY",
+      "tag": "traderpack",
+      "transaction_type": "BUY",
+      "order_type": "LIMIT",
+      "price": 3427.0,
+      "pair": "M&M-2026-11-11-101600",
+      "tick": 0.1,
+      "fo": true,
+      "plan": {
+        "entry": 3427.0,
+        "stop": 3384.4,
+        "stop_limit": 3367.4,
+        "target": 3469.6,
+        "risk_per_share": 59.6,
+        "charges_est": 85.56,
+        "max_loss": 1992.76,
+        "setup": "orb",
+        "entry_time": "10:15 AM",
+        "flat_by": "15:00"
+      },
+      "leg": "entry",
+      "price_source": {
+        "price": 3427.0,
+        "from": "the plan (trader-exit)",
+        "last": 3428.5,
+        "last_source": "yahoo",
+        "last_at": "2026-11-11T04:45:30Z",
+        "last_age_s": 30
+      },
+      "why": "opening-range breakout on M&M: 32 shares, bound by your max loss; max loss ₹1,992.76 at the stop (charges included)"
+    },
+    {
+      "variety": "regular",
+      "exchange": "NSE",
+      "tradingsymbol": "M&M",
+      "quantity": 32,
+      "product": "MIS",
+      "validity": "DAY",
+      "tag": "traderpack",
+      "transaction_type": "SELL",
+      "order_type": "SL",
+      "price": 3367.4,
+      "trigger_price": 3384.4,
+      "pair": "M&M-2026-11-11-101600",
+      "tick": 0.1,
+      "fo": true,
+      "plan": {
+        "entry": 3427.0,
+        "stop": 3384.4,
+        "stop_limit": 3367.4,
+        "target": 3469.6,
+        "risk_per_share": 59.6,
+        "charges_est": 85.56,
+        "max_loss": 1992.76,
+        "setup": "orb",
+        "entry_time": "10:15 AM",
+        "flat_by": "15:00"
+      },
+      "leg": "stop",
+      "price_source": {
+        "price": 3384.4,
+        "from": "the plan's stop (trader-exit)"
+      },
+      "why": "the stop for the entry above: goes in once the entry fills, for the filled quantity"
+    }
+  ]
+}

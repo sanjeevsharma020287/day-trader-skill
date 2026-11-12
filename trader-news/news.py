@@ -193,6 +193,32 @@ def utf8_stdio():
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError):
             pass
+
+# B0-provisional (R15): every choice that B0's two real orders may still change, in one place.
+# Not proven on a real account until the owner records b0_proven_on; see PLAN_INDIA_ZERODHA.md R14/R15.
+B0_PROVISIONAL = {
+    "tag": "traderpack",              # Kite order tag on every order this pack places (max 20 chars)
+    "tag_required": True,             # an order without the tag is refused by trader-risk
+    "entry_validity": "DAY",          # entries and stops; TTL is not used until B0 shows how Kite takes it
+    "stop_limit_band_pct": 0.5,       # the stop's SL limit sits this far below its trigger
+    "close_band_pct": 0.5,            # the 3 pm close's limit, under a fresh price of known age
+    "close_band_wide_pct": 1.5,       # ... and under an older one (never for a price of unknown age)
+    "price_sources": ("kite_ltp", "kite_positions", "yahoo"),  # first one present wins
+    "close_schedule": "15:00",        # when the owner's scheduled task runs the 3 pm close
+}
+
+
+def est_charges(qty, buy, sell):
+    """Zerodha intraday equity charges for one round trip, an ESTIMATE (plan F12): brokerage the lower of
+    0.03 % or Rs 20 per executed order, STT 0.025 % on the sell, NSE transaction 0.00307 %, SEBI Rs 10 a
+    crore, stamp duty 0.003 % on the buy, GST 18 % on brokerage + transaction + SEBI. Zerodha's Rs 50 + GST
+    fee for a position it squares off is not in it."""
+    b, s = qty * float(buy), qty * float(sell)
+    brokerage = min(0.0003 * b, 20.0) + min(0.0003 * s, 20.0)
+    txn = 0.0000307 * (b + s)
+    sebi = 0.000001 * (b + s)
+    gst = 0.18 * (brokerage + txn + sebi)
+    return round(brokerage + 0.00025 * s + txn + sebi + 0.00003 * b + gst, 2)
 # ==== end india clock ====
 
 

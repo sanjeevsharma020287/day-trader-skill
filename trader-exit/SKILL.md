@@ -36,7 +36,9 @@ python3 "${CLAUDE_SKILL_DIR}/exit.py" show                          # the curren
 ```
 
 Other flags: `--flat-by 14:45` (15:00 or earlier), `--tick 0.05` (when the
-stock is not in `trader/universe.txt`), `--universe PATH`, `--json`, `--now
+stock is not in `trader/universe.txt`; then `--fo yes` or `--fo no` too, so
+the plan says which square-off applies: 15:12 for the F&O list, 15:25 for
+the rest), `--universe PATH`, `--json`, `--now
 "2026-11-11 10:15"` (India time), `--entry PRICE` with a waiting entry.json
 to plan ahead, `--setup level`, `--offline FILE` (a saved Yahoo chart JSON
 for an ATR stop).
@@ -134,10 +136,9 @@ make a plan pass, and never calls a stop a guarantee.
 ## Safety
 
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
-- Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order in the last 15 minutes, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Dry run by default (`"dry_run": true`). The pack is not yet proven on a real account: real orders
+  stay blocked until the owner records B0 by hand (see the README and PLAN_INDIA_ZERODHA.md R14).
+- Nothing in this pack places an order except trader-broker, and only after trader-risk passed that
+  exact order and the user said yes to it in the chat.
+- Indian market only: NSE, through Zerodha, intraday (MIS). No options, margin or short selling.
+- Broker keys live outside the chat, never in it.

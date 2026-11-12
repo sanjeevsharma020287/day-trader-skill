@@ -84,6 +84,16 @@ class Repo(unittest.TestCase):
             self.assertIn("not financial advice", low, s)
             self.assertIn("yes", low, s)
 
+    def test_order_path_skills_say_dry_run_not_paper(self):
+        # R29: the US pack's "paper trading" is gone; trader-broker's SKILL.md is rewritten in B3.
+        for s in ORDER_PATH:
+            if s == "trader-broker":
+                continue
+            _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
+            self.assertIn('Dry run by default (`"dry_run": true`)', text, s)
+            self.assertNotIn("paper trading", text.lower(), s)
+            self.assertNotIn('"paper": true', text, s)
+
     def test_plugin_manifest_points_at_the_root_skills(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json")) as fh:
             plugin = json.load(fh)
@@ -148,18 +158,20 @@ class Repo(unittest.TestCase):
     def test_day_trading_limits_ship_in_the_example_config(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        for k in ("max_loss_per_trade_usd", "max_daily_loss_usd", "max_trades_per_day",
+        for k in ("max_loss_per_trade_inr", "max_daily_loss_inr", "max_trades_per_day",
                   "min_reward_risk", "require_stop", "no_entries_after", "flat_by"):
             self.assertIn(k, cfg, k)
         self.assertIs(cfg["require_stop"], True)
         self.assertIs(cfg.get("allow_short", False), False)
         self.assertIs(cfg.get("allow_margin", False), False)
 
-    def test_paper_trading_is_the_default(self):
+    def test_dry_run_is_the_default(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        self.assertIs(cfg["paper"], True)
-        self.assertIs(cfg.get("allow_options", False), False)
+        self.assertIs(cfg["dry_run"], True)
+        self.assertEqual(cfg["broker"], "zerodha")
+        for old in ("paper", "allow_options", "pdt_guard", "sec_user_agent", "fractional"):
+            self.assertNotIn(old, cfg)
 
 
 if __name__ == "__main__":
