@@ -87,13 +87,24 @@ class Project(unittest.TestCase):
              "leg": extra.pop("leg", "entry"), "symbol": order["tradingsymbol"],
              "transaction_type": order["transaction_type"], "quantity": order["quantity"], "status": status,
              "fo": extra.pop("fo", True)}
+        if status == "approved":                       # R44: approve copies the risk check's time (10:16 India)
+            r["risk_checked_at"] = extra.pop("risk_checked_at", "2026-11-11T04:46:00Z")
         r.update(extra)
         return r
+
+    def kite(self, filled=32, order_id="E1", at="2026-11-11 10:19"):
+        """R43: get_orders as saved by closer.py save orders."""
+        self.put("trader/kite/orders.json", {"saved_at": stamp(at), "data": [
+            {"order_id": order_id, "tradingsymbol": "M&M", "transaction_type": "BUY", "quantity": 32,
+             "filled_quantity": filled, "status": "COMPLETE" if filled == 32 else "OPEN", "tag": TAG}]})
 
 
 # ---------------------------------------------------------------- the guard
 
 class Guard(Project):
+    def setUp(self):
+        super().setUp()
+        self.kite()
     def go(self, tool, ti, at="2026-11-11 10:20"):
         return guard.decide({"tool_name": "mcp__kite__" + tool, "tool_input": ti}, self.root, utc(at))
 
@@ -149,7 +160,8 @@ class Guard(Project):
     def test_an_approved_buy_inside_the_window_once(self):
         self.state({"orders": [self.rec(kite_order(), "approved")]})
         self.blocked("a BUY only from 09:30 to 15:00", "place_order", kite_order(), at="2026-11-11 09:29")
-        self.blocked("more than 15 minutes old", "place_order", kite_order(), at="2026-11-11 10:33")
+        self.blocked("the risk check behind your yes (10:16 India time) is more than 15 minutes old", "place_order",
+                     kite_order(), at="2026-11-11 10:32")                        # R44: from the check, not the yes
         ok, why = self.go("place_order", kite_order())
         self.assertTrue(ok, why)
         self.blocked("was already sent once", "place_order", kite_order())
@@ -243,6 +255,110 @@ class Guard(Project):
         self.assertTrue(ok, why)
         self.state({"orders": [s]})                                                    # no exit approved
         self.blocked("is not a 3 pm cancel line", "cancel_order", {"variety": "regular", "order_id": "S7"})
+
+    def test_the_15_minutes_run_from_the_risk_check(self):
+        # R44: a yes at 10:30 on a 10:16 check is good until 10:31, not 10:45; a yes without the time is refused.
+        self.state({"orders": [self.rec(kite_order(), "approved", at="2026-11-11T10:30:00+05:30")]})
+        ok, why = self.go("place_order", kite_order(), at="2026-11-11 10:31")
+        self.assertTrue(ok, why)
+        rec = self.rec(kite_order(), "approved")
+        del rec["risk_checked_at"]
+        self.state({"orders": [rec]})
+        self.blocked("your yes carries no risk check time", "place_order", kite_order())
+
+    def test_numbers_match_by_value(self):
+        # R39: orders.json says 3427.0; the hook's JSON may say 3427 (and the reverse).
+        self.state({"orders": [self.rec(kite_order(price=3427.0), "approved")]})
+        ok, why = self.go("place_order", kite_order(price=3427))
+        self.assertTrue(ok, why)
+        self.state({"orders": [self.rec(kite_order(price=3427), "approved", at="2026-11-11T10:18:00+05:30")]})
+        ok, why = self.go("place_order", kite_order(price=3427.0, quantity=32.0))
+        self.assertTrue(ok, why)
+        stop = dict(STOP, quantity=20, price=3367.0, trigger_price=3384.0)
+        self.state({"orders": [self.rec(kite_order(), "placed", order_id="E1"),
+                               self.rec(stop, "stop_ready", leg="stop", stop_id="s1")]})
+        ok, why = self.go("place_order", dict(stop, price=3367, trigger_price=3384))
+        self.assertTrue(ok, why)
+        self.assertEqual(ticket.fingerprint(kite_order(price=3427)), ticket.fingerprint(kite_order(price=3427.0)))
+        self.assertNotEqual(ticket.fingerprint(kite_order(price=3427)),
+                            ticket.fingerprint(kite_order(price="3427")))                # text stays text
+
+    def test_a_stop_never_covers_more_than_kite_has_filled(self):
+        # R43, locked or not: the stops for the pair against the entry's filled_quantity in a fresh get_orders.
+        stop20 = dict(STOP, quantity=20)
+        self.state({"orders": [self.rec(kite_order(), "placed", order_id="E1"),
+                               self.rec(stop20, "stop_ready", leg="stop", stop_id="s1")]})
+        self.kite(filled=10)
+        self.blocked("the stops would cover 20 shares, but the entry (order_id E1) has filled 10", "place_order",
+                     stop20)
+        self.kite(filled=32, at="2026-11-11 10:14")
+        self.blocked("was not saved in the last 5 minutes", "place_order", stop20)
+        self.kite(filled=32, order_id="OTHER")
+        self.blocked("the entry's order_id E1 is not in the saved get_orders reply", "place_order", stop20)
+        self.cfg(**UNLOCKED)
+        self.kite(filled=10)
+        self.blocked("the stops would cover 20 shares", "place_order", stop20)
+        self.kite(filled=20)
+        self.assertTrue(self.go("place_order", stop20)[0])
+
+    def test_an_exit_waits_for_the_stops_to_be_cancelled(self):
+        # R41: the exit is blocked while a stop this pack placed for the symbol has no cancel through the guard.
+        sell = kite_order(transaction_type="SELL", price=3460.5)
+        s7 = self.rec(STOP, "placed", leg="stop", stop_id="s1", order_id="S7")
+        self.state({"orders": [s7, self.rec(sell, "approved", leg="exit", pair=None, fo=False)]})
+        self.put("trader/kite/positions.json", {"saved_at": stamp("2026-11-11 10:19"), "data": {"net": [
+            {"tradingsymbol": "M&M", "exchange": "NSE", "product": "MIS", "quantity": 32}]}})
+        self.blocked("cancel this pack's stop for M&M first (cancel_order, order_id S7)", "place_order", sell)
+        ok, why = self.go("cancel_order", {"variety": "regular", "order_id": "S7"})
+        self.assertTrue(ok, why)
+        self.assertEqual(self.get("trader/state/guard.json")["cancelled"], ["S7"])
+        ok, why = self.go("place_order", sell)
+        self.assertTrue(ok, why)
+        waiting = self.rec(dict(STOP, quantity=5), "stop_ready", leg="stop", stop_id="s2",
+                           at="2026-11-11T10:18:00+05:30")
+        self.state({"orders": [s7, waiting, self.rec(sell, "approved", leg="exit", pair=None, fo=False,
+                                                     at="2026-11-11T10:19:00+05:30")]})
+        self.blocked("a stop for M&M prepared at 2026-11-11T10:18:00+05:30 has no result recorded", "place_order",
+                     sell)
+
+    def test_the_root_is_the_project_not_the_events_cwd(self):
+        # R40: an event whose cwd is an unlocked copy with a yes waiting is judged by the project's own files.
+        copy = tempfile.mkdtemp()
+        try:
+            shutil.copytree(os.path.join(self.root, "trader"), os.path.join(copy, "trader"))
+            with open(os.path.join(copy, "trader", "config.json"), "w") as fh:
+                json.dump(config(**UNLOCKED), fh)
+            with open(os.path.join(copy, "trader", "state", "broker.json"), "w") as fh:
+                json.dump({"orders": [self.rec(kite_order(), "approved")]}, fh)
+            self.cfg()                                                                  # the project: dry run
+            env, now, stdin = os.environ.get("CLAUDE_PROJECT_DIR"), guard.real_now, sys.stdin
+            os.environ["CLAUDE_PROJECT_DIR"] = self.root
+            guard.real_now = lambda: utc("2026-11-11 10:20")
+            sys.stdin = io.StringIO(json.dumps({"tool_name": "mcp__kite__place_order", "tool_input": kite_order(),
+                                                "cwd": copy}))
+            err = io.StringIO()
+            try:
+                with redirect_stderr(err):
+                    code = guard.main()
+            finally:
+                sys.stdin, guard.real_now = stdin, now
+                if env is None:
+                    del os.environ["CLAUDE_PROJECT_DIR"]
+                else:
+                    os.environ["CLAUDE_PROJECT_DIR"] = env
+            self.assertEqual(code, 2)
+            self.assertIn("real orders are locked", err.getvalue())
+        finally:
+            shutil.rmtree(copy)
+        env, here = os.environ.pop("CLAUDE_PROJECT_DIR", None), os.getcwd()
+        os.chdir(self.root)                                                             # not where it is run from
+        try:
+            # the folder above trader-broker
+            self.assertEqual(os.path.normcase(guard.project_root()), os.path.normcase(ROOT))
+        finally:
+            os.chdir(here)
+            if env is not None:
+                os.environ["CLAUDE_PROJECT_DIR"] = env
 
     def test_the_hook_process_exits_2(self):
         # The hook as Claude Code runs it: JSON on stdin, exit 2 and the reason on stderr.
@@ -442,7 +558,7 @@ class Close(Project):
         self.save("orders", self.filled_orders()[:1] + [sell, old], at="2026-11-11 15:03")
         code, out = self.run_("result", at="2026-11-11 15:03")
         self.assertIn("Line 1 M&M: unfilled (0 of 20)", out)
-        self.assertIn("One retry: get_orders and get_positions again", out)
+        self.assertIn("One retry for 1 line (M&M): get_orders and get_positions again", out)
         recs = [r for r in self.get("trader/state/broker.json")["orders"] if r.get("kind") == "auto-close"]
         self.assertEqual([(r["status"], r["result"], r["quantity"]) for r in recs], [("auto-close", "unfilled", 0)])
         self.positions([self.pos("M&M", 20, 3429.0)], at="2026-11-11 15:03")
@@ -498,6 +614,66 @@ class Close(Project):
         self.put("trader/close-plan.json", p)
         self.run_("plan", "--retry", at="2026-11-11 15:02")
         self.assertEqual([l["tradingsymbol"] for l in self.get("trader/close-plan.json")["lines"]], ["TCS"])
+
+    def test_plan_waits_for_the_cancels(self):
+        # R42: orders read after the last cancel, and no sell while this pack has an open order for the stock.
+        self.put("trader/close-cancels.json", {"date": TODAY, "written_at": stamp("2026-11-11 15:00"), "lines": [
+            {"line": 1, "order_id": "S1", "used": "2026-11-11T15:01:30+05:30"}]})
+        self.save("orders", self.filled_orders()[:1], at="2026-11-11 15:01")
+        self.positions([self.pos("M&M", 20, 3429.0)])
+        code, out = self.run_("plan", at="2026-11-11 15:02")
+        self.assertEqual(code, 1)
+        self.assertIn("was saved before the last cancel", out)
+        still = dict(self.ORDERS[1])                                                   # the stop, still open
+        self.save("orders", self.filled_orders()[:1] + [still], at="2026-11-11 15:02")
+        self.positions([self.pos("M&M", 20, 3429.0)], at="2026-11-11 15:02")
+        code, out = self.run_("plan", at="2026-11-11 15:02")
+        self.assertIn("NOTE: M&M: this pack's order_id S1 is still open at Kite: no sell", out)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "trader", "close-plan.json")))
+        self.save("orders", self.filled_orders()[:1] + [dict(still, status="CANCELLED")], at="2026-11-11 15:02")
+        self.run_("plan", at="2026-11-11 15:02")
+        self.assertEqual(len(self.get("trader/close-plan.json")["lines"]), 1)
+        c = self.get("trader/close-cancels.json")
+        c["lines"][0]["used"] = "soon"
+        self.put("trader/close-cancels.json", c)
+        code, out = self.run_("plan", at="2026-11-11 15:02")
+        self.assertEqual(code, 1)
+        self.assertIn("trader/close-cancels.json line 1: 'soon' is not a time", out)
+
+    def test_old_prices_are_not_used(self):
+        # R45: an LTP file over 5 minutes old is skipped; a Yahoo price from another day is no price.
+        self.save("orders", self.filled_orders()[:1])
+        self.save("ltp", {"NSE:M&M": {"last_price": 3000.0}}, at="2026-11-11 14:55")
+        self.positions([self.pos("M&M", 20, 3429.0)])
+        self.assertIn("(kite_positions, 0 s old)", self.run_("plan")[1])
+        self.positions([self.pos("M&M", 20)])
+        self.put("trader/prices.json", {"prices": {"M&M": 3430.0},
+                                        "detail": {"M&M": {"time": stamp("2026-11-10 15:29")}}})
+        self.assertIn("NOTE: M&M: no price from", self.run_("plan")[1])
+
+    def test_a_line_not_sent_is_retried_and_a_rejected_one_is_not(self):
+        # R46
+        self.state({"orders": [self.rec(kite_order(), "placed", order_id="E1"),
+                               self.rec(kite_order(tradingsymbol="TCS", quantity=3), "placed", order_id="T1",
+                                        pair="TCS-p")]})
+        buys = [dict(self.ORDERS[0], status="COMPLETE", filled_quantity=32),
+                dict(self.ORDERS[0], order_id="T1", tradingsymbol="TCS", status="COMPLETE", quantity=3,
+                     filled_quantity=3)]
+        self.save("orders", buys)
+        self.positions([self.pos("M&M", 32, 3429.0), self.pos("TCS", 3, 4000.0)])
+        self.run_("plan")
+        p = self.get("trader/close-plan.json")
+        p["lines"][1]["used"] = "x"                                                    # TCS sent, M&M not
+        self.put("trader/close-plan.json", p)
+        self.save("orders", buys + [{"order_id": "C2", "tradingsymbol": "TCS", "transaction_type": "SELL",
+                                     "validity": "IOC", "tag": TAG, "status": "REJECTED", "filled_quantity": 0,
+                                     "order_timestamp": "2026-11-11 15:02:00"}], at="2026-11-11 15:02")
+        out = self.run_("result", at="2026-11-11 15:02")[1]
+        self.assertIn("One retry for 1 line (M&M)", out)
+        self.assertIn("Not retried (TCS): Zerodha squares off", out)
+        self.positions([self.pos("M&M", 32, 3429.0), self.pos("TCS", 3, 4000.0)], at="2026-11-11 15:02")
+        self.run_("plan", "--retry", at="2026-11-11 15:02")
+        self.assertEqual([l["tradingsymbol"] for l in self.get("trader/close-plan.json")["lines"]], ["M&M"])
 
     def test_result_filled_and_not_sent(self):
         self.save("orders", self.filled_orders()[:1])

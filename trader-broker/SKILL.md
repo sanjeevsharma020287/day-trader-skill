@@ -48,8 +48,8 @@ gates, every time:
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" show                     # every ticket, READY or not
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" approve --index 1 --reply "yes"
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --order-id 251111000123456
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" stop --pair M&M-2026-11-11-101600 --filled-qty 32
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --pair M&M-2026-11-11-101600 --status placed --order-id 251111000123457
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" stop --pair "M&M-2026-11-11-101600" --filled-qty 32
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --pair "M&M-2026-11-11-101600" --status placed --order-id 251111000123457
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol M&M --side buy --qty 32 --price 3427
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol M&M --price 3460.5
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log
@@ -130,6 +130,21 @@ the kite server is not set up there. Every step below is the user's own.
    Until the guard is registered for all three, ticket.py stays in dry run
    and `closer.py precheck` refuses (R7). The server marks no tool as
    destructive, so these settings and the guard are the only gates on it.
+   **Then test the installed command by hand.** A hook command that does not
+   start (for example `python3` where Windows has only `py`) exits with a
+   code other than 2 and blocks nothing. Run the command exactly as it is in
+   `.claude/settings.json`, from the project folder, on empty input:
+
+```bash
+CLAUDE_PROJECT_DIR="$PWD" bash -c 'echo "" | python3 "$CLAUDE_PROJECT_DIR/trader-broker/guard.py"; echo "exit $?"'
+```
+
+```powershell
+$env:CLAUDE_PROJECT_DIR = (Get-Location).Path; '' | py "$env:CLAUDE_PROJECT_DIR\trader-broker\guard.py"; "exit $LASTEXITCODE"
+```
+
+   It must print `trader-broker guard blocked this call: the hook input is
+   not an object` and `exit 2`. Anything else: fix the command first.
 6. **Log in each trading morning.** Kite's access token ends at 6 AM the next
    day. Ask the server for its login link (its `login` tool) and the user
    opens it in their browser and logs in there. Never ask for the password or
@@ -145,12 +160,17 @@ before it runs and blocks it (exit 2) unless this pack allows it:
 MIS, LIMIT or SL, the tag, whole-number JSON quantity); while real orders are
 locked, nothing but the stop of a real position (one prepared with
 `ticket.py stop` for an entry recorded as placed); once unlocked, a BUY only
-for your recorded yes, under 15 minutes old, sent once, 09:30 to 15:00; a
-stop or an approved exit inside the session; a 3 pm line only from today's
+for your recorded yes, within 15 minutes of the risk check it was given on,
+sent once, 09:30 to 15:00; a stop inside the session and never above what
+Kite shows filled (a saved get_orders under 5 minutes old, locked or not); an
+approved exit inside the session, once every stop this pack placed for that
+stock was cancelled through the guard; a 3 pm line only from today's
 plan, once, 15:00 to 15:25 (15:10 for the F&O list). A `cancel_order` only
 for a 3 pm cancel line or a stop before an approved exit. Letting a call
 through is not a yes: the Allow once card still follows in a chat session.
 A hook that times out does not block (a known gap; its timeout is 30 s).
+The guard judges the project it belongs to (`CLAUDE_PROJECT_DIR`, else the
+folder above `trader-broker/`), never the folder a command was run from.
 
 ### What the server does with what it is sent (read from source)
 
@@ -185,10 +205,13 @@ A hook that times out does not block (a known gap; its timeout is 30 s).
 6. **The stop, after the fill.** While the stops cover less than the
    entry's quantity, `show` prints **UNPROTECTED** with the pair id and how
    many shares the stops cover ("stops cover 20 of 32"). Read `get_orders`:
-   when the entry is COMPLETE, or partly filled, run `ticket.py stop --pair
-   <pair> --filled-qty Q` with the filled quantity no stop covers yet, call
+   when the entry is COMPLETE, or partly filled, save that reply (`closer.py
+   save orders`) and run `ticket.py stop --pair "<pair>" --filled-qty Q`
+   with the filled quantity no stop covers yet (quote the pair id: `&`
+   splits a shell command). It refuses more than Kite's `filled_quantity`
+   for the entry minus what the stops already cover (R43). Call
    `place_order` with the JSON it prints (its own Allow once card; the yes
-   already covered the pair), then `ticket.py result --pair <pair> --status
+   already covered the pair), then `ticket.py result --pair "<pair>" --status
    placed --order-id ...`. If more fills later, run `stop` again for the new
    shares. The stop comes from the log of your yes, not from
    `trader/orders.json`, so a new plan or a flatten ticket loses nothing, and
@@ -307,7 +330,8 @@ stay in the file; they are never sent.
 - Never places orders from a scheduled or background task: nobody is there to say yes. The one exception is the
   owner's "trader-close" task, and only the lines `closer.py` printed, once active (the owner's gates and the guard).
 - Never runs the 3 pm close by hand to get around its gates, and never writes `trader/close-plan.json` or
-  `trader/close-cancels.json` itself.
+  `trader/close-cancels.json` itself, and never edits or deletes `trader/state/guard.json` (the guard's record of
+  what it let through once, and of the stops cancelled before an exit).
 - Never asks for, reads, stores or repeats API keys, secrets, passwords or the TOTP; never logs in for the user.
 - Never calls `modify_order` or a GTT tool.
 - Never retries a failed `place_order`, and never promises a fill price: a stop can fill worse, or not at all.

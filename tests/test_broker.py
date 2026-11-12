@@ -233,7 +233,7 @@ class Ready(Clocked):
         self.assertEqual((ready, label), (True, "READY: trader-risk PASS on the pair, waiting for your yes"))
         ready, label, _ = self.status(os_, 2)
         self.assertFalse(ready)
-        self.assertEqual(label, "the stop of order 1: it goes in after that entry fills (ticket.py stop --pair %s)"
+        self.assertEqual(label, "the stop of order 1: it goes in after that entry fills (ticket.py stop --pair \"%s\")"
                          % PAIR)
 
     def test_a_blocked_or_missing_stop_leg_blocks_the_entry(self):
@@ -320,6 +320,8 @@ class Flow(Clocked):
         self.write("orders", doc)
         self.write("config", cfg(**LIVE))
         self.write("risk", risk_for(doc["orders"]))
+        self.p["kite"] = os.path.join(self.d, "kite-orders.json")
+        self.kite(32)
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -333,10 +335,19 @@ class Flow(Clocked):
         with open(self.p[k], encoding="utf-8") as fh:
             return json.load(fh)
 
+    def kite(self, filled, order_id="251111000000001", at=None):
+        """R43: get_orders as saved by closer.py save orders, at the current clock unless `at`."""
+        saved = (utc(at) if at else ticket.real_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.write("kite", {"saved_at": saved, "data": [{"order_id": order_id, "tradingsymbol": "M&M",
+                                                          "transaction_type": "BUY", "quantity": 32,
+                                                          "filled_quantity": filled, "status": "OPEN"}]})
+
     def run_(self, *argv, files=("orders", "config", "risk", "state")):
         args = list(argv)
         for k in files:
             args += ["--" + k, self.p[k]]
+        if argv and argv[0] == "stop":
+            args += ["--kite-orders", self.p["kite"]]
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = ticket.main(args)
@@ -386,12 +397,13 @@ class Flow(Clocked):
         self.assertIn("Recorded your yes for order 1 and its stop (order 2)", out)
         self.assertIn("Now call place_order with exactly:", out)
         self.assertIn("Never retry a failed call", out)
-        self.assertIn("ticket.py stop --pair %s --filled-qty Q" % PAIR, out)
+        self.assertIn('ticket.py stop --pair "%s" --filled-qty Q' % PAIR, out)
         self.assertIn("The 3 pm close is not active", out)
         rec = self.read("state")["orders"][-1]
         self.assertEqual((rec["status"], rec["kind"], rec["max_loss"], rec["risk_check"], rec["symbol"],
                           rec["transaction_type"]), ("approved", "entry", 1992.76, "chk1", "M&M", "BUY"))
         self.assertEqual(rec["stop_leg"], orders()[1])                     # R38: the stop the yes covers
+        self.assertEqual(rec.get("risk_checked_at"), "2026-11-11T04:46:00Z")   # R44: the check's own time (10:16)
         out = self.run_("show")[1]
         self.assertIn("APPROVED by you at", out)
         self.assertNotIn("UNPROTECTED", out)                               # not placed yet
@@ -406,7 +418,7 @@ class Flow(Clocked):
         code, out, _ = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "251111000000001")
         self.assertEqual(code, 0)
         self.assertIn("UNPROTECTED: M&M, entry order_id 251111000000001 (pair %s): stops cover 0 of 32; whatever has "
-                      "filled beyond that has no stop. When get_orders shows a fill: ticket.py stop --pair %s "
+                      "filled beyond that has no stop. When get_orders shows a fill: ticket.py stop --pair \"%s\" "
                       "--filled-qty Q" % (PAIR, PAIR), out)
         for bad in ("33", "0", "20.5"):
             self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", bad)[0], 1, bad)
@@ -421,12 +433,12 @@ class Flow(Clocked):
         code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "12")
         self.assertIn("has no result yet", err)                            # one prepared stop at a time
         code, _, err = self.run_("result", "--index", "2", "--status", "placed", "--order-id", "x")
-        self.assertIn("order 2 is a stop: record its result with --pair %s" % PAIR, err)
+        self.assertIn('order 2 is a stop: record its result with --pair "%s"' % PAIR, err)
         code, out, _ = self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "251111000000002")
         self.assertEqual(code, 0)
         self.assertIn("stops cover 20 of 32", self.run_("show")[1])         # R37: the 12 left still have no stop
         code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "13")
-        self.assertIn("stops cover 20 of 32, so 1 to 12", err)
+        self.assertIn("get_orders shows 32 of 32 filled and the stops cover 20, so 1 to 12", err)
         self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "12")[0], 0)
         self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "251111000000003")
         self.assertNotIn("UNPROTECTED", self.run_("show")[1])
@@ -439,6 +451,26 @@ class Flow(Clocked):
                          [("entry", 32, "251111000000001", None),
                           ("stop", 20, "251111000000002", PAIR + "/stop-1"),
                           ("stop", 12, "251111000000003", PAIR + "/stop-2")])
+
+    def test_the_stop_never_covers_more_than_kite_has_filled(self):
+        # R43: --filled-qty is checked against the entry's filled_quantity in a fresh get_orders.
+        self.placed_entry()
+        self.kite(20)
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "21")
+        self.assertIn("get_orders shows 20 of 32 filled and the stops cover 0, so 1 to 20", err)
+        self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "20")[0], 0)
+        self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "S1")
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "1")
+        self.assertIn("get_orders shows 20 of 32 filled and the stops cover 20: nothing more to cover until more "
+                      "fills", err)
+        self.kite(32, at="2026-11-11 10:11")                                    # saved 6 minutes ago
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "12")
+        self.assertIn("was not saved in the last 5 minutes", err)
+        self.kite(32, order_id="OTHER")
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "12")
+        self.assertIn("the entry's order_id 251111000000001 is not in", err)
+        self.kite(32)
+        self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "12")[0], 0)
 
     def test_a_stop_that_did_not_go_in_covers_nothing(self):
         self.placed_entry()

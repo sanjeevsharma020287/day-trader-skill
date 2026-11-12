@@ -11,18 +11,24 @@ settings.example.json (PLAN_INDIA_ZERODHA.md 5.3, R7).
                  While real orders are locked ("dry_run" not false, or b0_proven_on not a real past date, R14):
                  blocked, except the stop of a real position (a stop prepared with ticket.py stop today, for
                  an entry recorded as placed with an order_id). Unlocked:
-                   a BUY      the latest record for exactly this order is your yes (approved), under 15 minutes
-                              old and not sent before, and India time is 09:30 to 15:00 on an NSE trading day;
-                   a stop     prepared with ticket.py stop today, its entry placed, inside the exit session;
-                   an exit    an approved exit ticket, inside the exit session, no more than today's MIS
-                              position in trader/kite/positions.json saved under 5 minutes ago;
+                   a BUY      the latest record for exactly this order is your yes (approved), within 15 minutes
+                              of the risk check it was given on (R44), not sent before, and India time is 09:30
+                              to 15:00 on an NSE trading day;
+                   a stop     prepared with ticket.py stop today, its entry placed, inside the exit session, and
+                              the pair's stops no more than the entry's filled_quantity in a get_orders reply
+                              saved under 5 minutes ago (R43; locked or not);
+                   an exit    an approved exit ticket, inside the exit session, every stop this pack placed for
+                              the stock cancelled through the guard and none prepared without a result (R41), no
+                              more than today's MIS position in trader/kite/positions.json saved under 5 minutes ago;
                    3 pm       a line of trader/close-plan.json, unused, written under 5 minutes ago today,
                               15:00 to 15:25 (15:10 for an F&O-list stock), only with close_gate_proven_on set.
   cancel_order   an order_id in an unused line of trader/close-cancels.json (same rules as the plan), or a
                  stop this pack placed today for a symbol with an approved exit ticket.
 
-Every line of the plan or the cancels is used once; the guard marks it. Fails closed: unreadable input, an
-unknown tool, a missing file or any other shape exits 2. Known gap (F14): a hook that times out does not block.
+Every line of the plan or the cancels is used once; the guard marks it. Numbers match by value (3427 is 3427.0,
+R39). The files are the project's (CLAUDE_PROJECT_DIR, else the folder above trader-broker/), never the event's
+cwd (R40). Fails closed: unreadable input, an unknown tool, a missing file or any other shape exits 2. Known gap
+(F14): a hook that times out does not block.
 """
 
 import json
@@ -116,8 +122,8 @@ def prepared_stop(state, today, fp):
             continue
         e = ticket.latest(state, today, pair=first.get("pair"), leg="entry")
         if e and e.get("status") == "placed" and e.get("order_id"):
-            return last
-    return None
+            return last, e
+    return None, None
 
 
 def used_key(rec):
@@ -129,12 +135,23 @@ def check_place(root, ti, cfg, state, today, now):
     fp = ticket.fingerprint(ti)
     local = ticket.to_ist(now)
     is_open, why = unlocked(cfg, today)
-    stop = prepared_stop(state, today, fp) if ti.get("transaction_type") == "SELL" else None
+    stop, entry = prepared_stop(state, today, fp) if ti.get("transaction_type") == "SELL" else (None, None)
     if stop is not None:
         if ti.get("order_type") != "SL":
             raise Blocked("a stop must be an SL order")
         if not in_session(local, stop.get("fo")):
             raise Blocked("outside the session for a stop (09:15 to the square-off)")
+        try:   # R43: the stops never cover more than the entry has filled, by Kite's own get_orders
+            orders = ticket.kite_orders(os.path.join(root, "trader", "kite", "orders.json"), now)
+        except ticket.TicketError as e:
+            raise Blocked(str(e))
+        filled = ticket.filled_of(orders, entry.get("order_id"))
+        if filled is None:
+            raise Blocked("the entry's order_id %s is not in the saved get_orders reply" % entry.get("order_id"))
+        cover = ticket.covered(state, today, stop.get("pair"))
+        if cover > filled:
+            raise Blocked("the stops would cover %d shares, but the entry (order_id %s) has filled %d"
+                          % (cover, entry.get("order_id"), filled))
         return use_once(root, stop, "the stop of a placed entry (%s)" % stop.get("stop_id"))
     if not is_open:
         raise Blocked("real orders are locked: %s. Only the stop of a real position may go (R14)" % why)
@@ -146,9 +163,13 @@ def check_place(root, ti, cfg, state, today, now):
             raise Blocked("no NSE session for this pack today")
         if not ticket.ENTRIES_FROM <= local.time() < ticket.ENTRIES_UNTIL:
             raise Blocked("a BUY only from 09:30 to 15:00 India time (it is %s)" % local.strftime("%H:%M"))
-        at = ticket.parse_ist(rec.get("at"))
-        if (now - at).total_seconds() > ticket.RISK_MAX_AGE_MIN * 60:
-            raise Blocked("your yes at %s is more than %d minutes old" % (rec.get("at"), ticket.RISK_MAX_AGE_MIN))
+        try:   # R44: the 15 minutes run from the risk check the yes was given on
+            checked = ticket.datetime.datetime.strptime(str(rec.get("risk_checked_at")), "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            raise Blocked("your yes carries no risk check time; run check.py and approve again")
+        if (now - checked).total_seconds() > ticket.RISK_MAX_AGE_MIN * 60:
+            raise Blocked("the risk check behind your yes (%s India time) is more than %d minutes old"
+                          % (ticket.to_ist(checked).strftime("%H:%M"), ticket.RISK_MAX_AGE_MIN))
         return use_once(root, rec, "your yes at %s" % rec.get("at"))
     # a SELL: the 3 pm close, or an approved exit
     line = close_line(root, "trader/close-plan.json", "tool_input", ti, cfg, today, now)
@@ -159,6 +180,21 @@ def check_place(root, ti, cfg, state, today, now):
         raise Blocked("this SELL is not a prepared stop, a 3 pm close line or an approved exit ticket")
     if not in_session(local, rec.get("fo")):
         raise Blocked("outside the session for an exit (09:15 to the square-off)")
+    sym = ti.get("tradingsymbol")
+    noted = set(guard_doc(root).get("cancelled") or [])
+    live, waiting = [], []
+    for first, last in ticket.stop_groups(state, today).values():
+        if first.get("symbol") != sym:
+            continue
+        if last.get("status") == "placed" and str(last.get("order_id")) not in noted:
+            live.append(str(last.get("order_id")))
+        elif last.get("status") == "stop_ready":
+            waiting.append(str(first.get("at")))
+    if live:   # R41: a stop left at the broker would fire after this sell and open a short
+        raise Blocked("cancel this pack's stop for %s first (cancel_order, order_id %s)" % (sym, ", ".join(live)))
+    if waiting:
+        raise Blocked("a stop for %s prepared at %s has no result recorded: look in get_orders and record it first"
+                      % (sym, ", ".join(waiting)))
     pos = _read(root, "trader/kite/positions.json")
     if not isinstance(pos, dict) or not _age_ok(pos.get("saved_at"), now):
         raise Blocked("trader/kite/positions.json is missing or not saved in the last 5 minutes (get_positions)")
@@ -177,15 +213,24 @@ def net_mis(pos, sym):
                and p.get("exchange") == "NSE")
 
 
+def guard_doc(root):
+    """trader/state/guard.json: "used" (the yeses let through once) and "cancelled" (stops let through to cancel)."""
+    doc = _read(root, "trader/state/guard.json")
+    doc = doc if isinstance(doc, dict) else {}
+    for k in ("used", "cancelled"):
+        if not isinstance(doc.get(k), list):
+            doc[k] = []
+    return doc
+
+
 def use_once(root, rec, what):
     """Each yes goes to the broker once: the guard keeps the yeses it let through in trader/state/guard.json."""
-    doc = _read(root, "trader/state/guard.json") or {}
-    used = doc.get("used") if isinstance(doc.get("used"), list) else []
+    doc = guard_doc(root)
     key = used_key(rec)
-    if key in used:
+    if key in doc["used"]:
         raise Blocked("%s was already sent once; record what happened (ticket.py result)" % what)
-    used.append(key)
-    _write(root, "trader/state/guard.json", {"used": used})
+    doc["used"].append(key)
+    _write(root, "trader/state/guard.json", doc)
     return what
 
 
@@ -229,6 +274,9 @@ def check_cancel(root, ti, cfg, state, today, now):
              and r.get("status") == "approved"}
     for first, last in ticket.stop_groups(state, today).values():
         if last.get("status") == "placed" and str(last.get("order_id")) == oid and first.get("symbol") in exits:
+            doc = guard_doc(root)          # R41: the exit waits for this note
+            doc["cancelled"].append(oid)
+            _write(root, "trader/state/guard.json", doc)
             return "the stop %s, before an approved exit of %s" % (first.get("stop_id"), first.get("symbol"))
     raise Blocked("order_id %s is not a 3 pm cancel line or a stop to cancel before an approved exit" % oid)
 
@@ -260,14 +308,18 @@ def decide(event, root, now):
         return False, "the guard could not check this call (%s: %s)" % (type(e).__name__, e)
 
 
+def project_root():
+    """R40: the project this guard belongs to: CLAUDE_PROJECT_DIR, else the folder above trader-broker/. Never the
+    event's cwd: a cd into a copy with its own trader/ files must not change whose gates are judged."""
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def main():
     try:
         event = json.loads(sys.stdin.read() or "null")
     except ValueError:
         event = None
-    root = (event or {}).get("cwd") if isinstance(event, dict) else None
-    root = root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    ok, why = decide(event, root, real_now())
+    ok, why = decide(event, project_root(), real_now())
     if ok:
         return 0
     sys.stderr.write("trader-broker guard blocked this call: %s\n" % why)

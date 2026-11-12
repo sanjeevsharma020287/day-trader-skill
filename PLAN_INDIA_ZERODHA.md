@@ -374,6 +374,11 @@ the reason on stderr) unless one of these holds:
 `variety` other than `regular`, `product` other than MIS, MARKET or SL-M, and
 `exchange` other than NSE all exit 2.
 
+**The installed command [R47]:** B0 runs the hook command exactly as it is in
+the project's `.claude/settings.json`, by hand, on empty input, and sees
+`trader-broker guard blocked this call` with exit code 2. A command that does
+not start exits with another code and blocks nothing.
+
 **The B0 gate [R7]:** B0 must show that an exit-2 hook blocks an MCP tool that
 the scheduled task has on "always allow". If it does not, the no-yes close
 (D4) is not built in B4 and goes back to Fable and the owner.

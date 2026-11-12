@@ -325,6 +325,9 @@ def close_gate_lines(cfg, today):
 def fingerprint(order):
     """Same function in trader-risk/check.py: the exact Kite order that was checked."""
     core = {k: order[k] for k in KITE_FIELDS if k in order and order[k] is not None}
+    for k, v in core.items():   # R39: numbers by value (3427 and 3427.0 are the same order); text stays text
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            core[k] = float(v)
     blob = json.dumps(core, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -541,7 +544,7 @@ def status_of(orders, idx, risk, state, today, now):
     leg = leg_of(order)
     if leg == "stop":
         e, _ = entry_of(orders, idx)
-        return False, ("the stop of order %s: it goes in after that entry fills (ticket.py stop --pair %s)"
+        return False, ("the stop of order %s: it goes in after that entry fills (ticket.py stop --pair \"%s\")"
                        % (e or "?", order.get("pair"))), None
     fp = fingerprint(order)
     rv, why = risk_verdict(risk, fp, today)
@@ -602,6 +605,44 @@ def stop_groups(state, today):
     return out
 
 
+KITE_FILE_MAX_AGE_S = 300   # a saved kite reply older than this is not used
+
+
+def unwrap(reply):
+    """A kite reply as saved: the bare value, or {"data": value} (with or without "status")."""
+    if isinstance(reply, dict) and "data" in reply and len(set(reply) - {"data", "status"}) == 0:
+        return reply["data"]
+    return reply
+
+
+def order_list(reply):
+    v = unwrap(reply)
+    return [o for o in v if isinstance(o, dict)] if isinstance(v, list) else []
+
+
+def kite_orders(path, now):
+    """R43: the orders in a get_orders reply saved with closer.py save orders in the last 5 minutes."""
+    doc = read_json(path, "saved get_orders reply", required=False)
+    if not isinstance(doc, dict):
+        raise TicketError("no %s: call get_orders, save the reply to trader/kite/orders.reply.json and run "
+                          "closer.py save orders" % path)
+    try:
+        t = datetime.datetime.strptime(str(doc.get("saved_at")), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        t = None
+    if t is None or not -60 <= (now - t).total_seconds() <= KITE_FILE_MAX_AGE_S:
+        raise TicketError("%s was not saved in the last 5 minutes: read get_orders again and save it" % path)
+    return order_list(doc.get("data"))
+
+
+def filled_of(orders, order_id):
+    """The filled quantity of one order in a get_orders list, or None when it is not there."""
+    for o in orders:
+        if str(o.get("order_id")) == str(order_id):
+            return int(_f(o.get("filled_quantity")) or 0)
+    return None
+
+
 def covered(state, today, pair):
     """R37: shares under a stop for this pair: stops placed, plus a stop prepared with no result yet (it may be at
     the broker). A denied, failed or unsent stop covers nothing."""
@@ -617,7 +658,7 @@ def unprotected(state, today):
         if have >= want:
             continue
         out.append("UNPROTECTED: %s, entry order_id %s (pair %s): stops cover %d of %d; whatever has filled beyond "
-                   "that has no stop. When get_orders shows a fill: ticket.py stop --pair %s --filled-qty Q"
+                   "that has no stop. When get_orders shows a fill: ticket.py stop --pair \"%s\" --filled-qty Q"
                    % (e.get("symbol"), e.get("order_id") or "not recorded", pair, have, want, pair))
     return out
 
@@ -814,7 +855,8 @@ def cmd_approve(a):
     rec = _record(order, a.index, today, now, "approved" if m == "live" else "dry_run", reply=a.reply,
                   kind=rv.get("kind"), max_loss=ml, risk_check=risk.get("check_id"), mode=m,
                   stop_index=sj, stop_fingerprint=fingerprint(stop) if stop else None,
-                  stop_leg=dict(stop) if stop else None)   # R38: the stop this yes covers, kept in the log
+                  stop_leg=dict(stop) if stop else None,   # R38: the stop this yes covers, kept in the log
+                  risk_checked_at=risk.get("checked_at"))  # R44: the guard counts its 15 minutes from the check
     state.setdefault("orders", []).append(rec)
     write_json(a.state, state)
     print("Recorded your yes for order %d%s: %s." % (a.index, (" and its stop (order %d)" % sj) if stop else "",
@@ -844,7 +886,7 @@ def cmd_approve(a):
               "first (its status_message says why), because a call that timed out may still have placed it."
               % a.index)
         if stop is not None:
-            print("When get_orders shows it COMPLETE (or part filled): ticket.py stop --pair %s --filled-qty Q. "
+            print("When get_orders shows it COMPLETE (or part filled): ticket.py stop --pair \"%s\" --filled-qty Q. "
                   "Until its stops cover the filled quantity the position is UNPROTECTED." % order.get("pair"))
     if leg_of(order) == "entry":
         for x in close_gate_lines(cfg, today):
@@ -882,7 +924,7 @@ def cmd_result(a):
         orders, cfg, risk, state, today, now = _load(a)
         order = _pick(orders, a.index)
         if leg_of(order) == "stop":
-            raise TicketError("order %d is a stop: record its result with --pair %s" % (a.index, order.get("pair")))
+            raise TicketError("order %d is a stop: record its result with --pair \"%s\"" % (a.index, order.get("pair")))
         rec = latest(state, today, fp=fingerprint(order))
         if not rec or rec.get("status") != "approved":
             raise TicketError("order %d has no live yes recorded today; a result can only follow it" % a.index)
@@ -933,18 +975,26 @@ def cmd_stop(a):
     waiting = [f for f, l in groups if l.get("status") == "stop_ready"]
     if waiting:
         raise TicketError("the stop prepared at %s for pair %s has no result yet: look in get_orders and record it "
-                          "first (ticket.py result --pair %s --status placed|denied|failed|unsent)"
+                          "first (ticket.py result --pair \"%s\" --status placed|denied|failed|unsent)"
                           % (waiting[-1].get("at"), a.pair, a.pair))
-    want, have = int(e.get("quantity") or 0), covered(state, today, a.pair)
-    q = _f(a.filled_qty)
-    if q is None or q != int(q) or not 1 <= q <= want - have:
-        if have >= want:
-            raise TicketError("stops already cover all %d shares of pair %s" % (want, a.pair))
-        raise TicketError("--filled-qty wants the newly filled quantity from get_orders that no stop covers yet: "
-                          "stops cover %d of %d, so 1 to %d" % (have, want, want - have))
     why = window_now(stop, {"kind": "exit"}, risk or {}, now)
     if why:
         raise TicketError("the stop cannot go in now: %s" % why)
+    want, have = int(e.get("quantity") or 0), covered(state, today, a.pair)
+    filled = filled_of(kite_orders(a.kite_orders, now), e.get("order_id"))   # R43: Kite's own fill, not a typed one
+    if filled is None:
+        raise TicketError("the entry's order_id %s is not in %s: read get_orders again and save it"
+                          % (e.get("order_id"), a.kite_orders))
+    room = min(want, filled) - have
+    q = _f(a.filled_qty)
+    if q is None or q != int(q) or not 1 <= q <= room:
+        if have >= want:
+            raise TicketError("stops already cover all %d shares of pair %s" % (want, a.pair))
+        if room <= 0:
+            raise TicketError("get_orders shows %d of %d filled and the stops cover %d: nothing more to cover until "
+                              "more fills" % (filled, want, have))
+        raise TicketError("--filled-qty wants the newly filled quantity that no stop covers yet: get_orders shows "
+                          "%d of %d filled and the stops cover %d, so 1 to %d" % (filled, want, have, room))
     s = dict(stop, quantity=int(q))
     ti = tool_input(s)
     sid = "%s/stop-%d" % (a.pair, len(groups) + 1)
@@ -954,7 +1004,7 @@ def cmd_stop(a):
     print("Stop %s, for %d shares: %s." % (sid, int(q), plain(s)))
     print("Call %s with exactly:" % TOOL)
     print(json.dumps(ti, indent=2, ensure_ascii=False))
-    print("Claude's card shows Allow once / Deny. Then: ticket.py result --pair %s --status placed --order-id "
+    print("Claude's card shows Allow once / Deny. Then: ticket.py result --pair \"%s\" --status placed --order-id "
           "<Kite order_id>. Stops then cover %d of %d; if more fills later, run ticket.py stop again for it."
           % (a.pair, have + int(q), want))
     return 0
@@ -1122,6 +1172,8 @@ def main(argv=None):
     p = sub.add_parser("stop", help="the stop's place_order input for the filled quantity")
     common(p)
     p.add_argument("--pair", required=True, help="the entry's pair id (show and the UNPROTECTED line give it)")
+    p.add_argument("--kite-orders", default="trader/kite/orders.json",
+                   help="the get_orders reply saved with closer.py save orders (R43)")
     p.add_argument("--filled-qty", required=True)
     p = sub.add_parser("fill", help="record a fill in trader/portfolio.json")
     p.add_argument("--symbol", required=True)

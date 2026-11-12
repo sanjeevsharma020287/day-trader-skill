@@ -420,6 +420,9 @@ def read_json(path, what, required=True):
 def fingerprint(order):
     """Same function in trader-broker/ticket.py: the exact Kite order that was checked."""
     core = {k: order[k] for k in KITE_FIELDS if k in order and order[k] is not None}
+    for k, v in core.items():   # R39: numbers by value (3427 and 3427.0 are the same order); text stays text
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            core[k] = float(v)
     blob = json.dumps(core, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 

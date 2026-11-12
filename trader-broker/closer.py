@@ -38,6 +38,7 @@ FRESH_CLOSE_S = 300             # B0-provisional (R15): a close price this fresh
 FO_LAST = dt.time(15, 10)       # the no-yes sell for an F&O-list stock stops here, 2 minutes before 15:12 (R8)
 DONE = {"COMPLETE", "CANCELLED", "REJECTED"}
 FEE = "%s + GST an order" % ticket.inr(50, 0)
+RETRY = ("unfilled", "partly filled", "not sent")   # R46: a rejected or unfound line is not retried
 
 
 class CloseError(Exception):
@@ -91,16 +92,8 @@ def saved(root, what, now, max_age=FILE_MAX_AGE_S):
     return doc.get("data"), t
 
 
-def unwrap(reply):
-    """A kite reply as saved: the bare value, or {"data": value} (with or without "status")."""
-    if isinstance(reply, dict) and "data" in reply and len(set(reply) - {"data", "status"}) == 0:
-        return reply["data"]
-    return reply
-
-
-def order_list(reply):
-    v = unwrap(reply)
-    return [o for o in v if isinstance(o, dict)] if isinstance(v, list) else []
+unwrap = ticket.unwrap          # a kite reply as saved: the bare value, or {"data": value}
+order_list = ticket.order_list
 
 
 def net_positions(reply):
@@ -240,6 +233,8 @@ def price_for(root, sym, positions_reply, pos_saved, now):
         if src == "kite_ltp":
             doc = read(root, "trader/kite/ltp.json")
             t = parse_stamp((doc or {}).get("saved_at"))
+            if t is None or not -60 <= (now - t).total_seconds() <= FILE_MAX_AGE_S:
+                continue                                   # R45: an old (or undated) LTP file is not used
             data = unwrap((doc or {}).get("data"))
             q = (data or {}).get("NSE:" + sym) if isinstance(data, dict) else None
             p = ticket._f((q or {}).get("last_price")) if isinstance(q, dict) else None
@@ -264,6 +259,8 @@ def price_for(root, sym, positions_reply, pos_saved, now):
                         t = None
                     if t:
                         break
+                if t is not None and ticket.to_ist(t).date() != ticket.to_ist(now).date():
+                    continue                               # R45: a Yahoo price from another day is no price
                 if p and p > 0:
                     return p, "yahoo", (now - t).total_seconds() if t else None
     return None, None, None
@@ -282,9 +279,25 @@ def tick_down(price, tick):
 def cmd_plan(a, root, cfg, state, now):
     local = ticket.to_ist(now)
     today = local.date().isoformat()
-    orders, _ = saved(root, "orders", now)
+    orders, orders_saved = saved(root, "orders", now)
     positions, pos_saved = saved(root, "positions", now)
     ours = pack_records(state, today)
+    cancels = read(root, "trader/close-cancels.json")
+    if isinstance(cancels, dict) and cancels.get("date") == today:   # R42: read again after the last cancel
+        stamps = []
+        for l in cancels.get("lines") or []:
+            if l.get("used"):
+                try:
+                    stamps.append(ticket.parse_ist(l["used"]))
+                except ValueError:
+                    raise CloseError("trader/close-cancels.json line %s: %r is not a time" % (l.get("line"), l["used"]))
+        if stamps and orders_saved < max(stamps):
+            raise CloseError("trader/kite/orders.json was saved before the last cancel: read get_orders and "
+                             "get_positions again, save them, then closer.py plan")
+    still_open = {}
+    for o in order_list(orders):
+        if str(o.get("order_id") or "") in ours and str(o.get("status") or "").upper() not in DONE:
+            still_open.setdefault(o.get("tradingsymbol"), []).append(str(o.get("order_id")))
     tag = ticket.B0_PROVISIONAL["tag"]
     universe = ticket.read_universe(path(root, a.universe))
     on, why = active(root, cfg, today)
@@ -295,8 +308,7 @@ def cmd_plan(a, root, cfg, state, now):
             raise CloseError("--retry needs today's trader/close-plan.json")
         if old.get("retry"):
             raise CloseError("there is one retry only; anything still open goes to Zerodha's square-off")
-        retry_of = {l.get("tradingsymbol") for l in old.get("lines") or []
-                    if l.get("result") in ("unfilled", "partly filled")}
+        retry_of = {l.get("tradingsymbol") for l in old.get("lines") or [] if l.get("result") in RETRY}
     filled, tagless = {}, set()
     for o in order_list(orders):
         rec = ours.get(str(o.get("order_id") or ""))
@@ -321,6 +333,10 @@ def cmd_plan(a, root, cfg, state, now):
             notes.append("%s: %d held, opened by hand (not by this pack): left alone" % (sym, net))
             continue
         if retry_of is not None and sym not in retry_of:
+            continue
+        if sym in still_open:   # R42: a stop left open is a short after the sell; a resting BUY, a new position
+            notes.append("%s: this pack's order_id %s is still open at Kite: no sell; cancel it (closer.py cancels) "
+                         "and read the orders again" % (sym, ", ".join(still_open[sym])))
             continue
         qty = min(net, filled[sym])
         tick, fo = universe.get(sym, (None, None))
@@ -373,12 +389,10 @@ def cmd_result(a, root, cfg, state, now):
     orders, _ = saved(root, "orders", now)
     since = ticket.to_ist(parse_stamp(plan.get("written_at")) or now).strftime("%Y-%m-%d %H:%M:%S")
     tag = ticket.B0_PROVISIONAL["tag"]
-    open_left = 0
     for l in plan.get("lines") or []:
         if not l.get("used"):
             l["result"] = "not sent"
             print("Line %d %s: not sent" % (l["line"], l["tradingsymbol"]))
-            open_left += 1
             continue
         mine = [o for o in order_list(orders) if o.get("tradingsymbol") == l["tradingsymbol"]
                 and o.get("transaction_type") == "SELL" and o.get("tag") == tag
@@ -397,8 +411,6 @@ def cmd_result(a, root, cfg, state, now):
         else:
             res = "not final"
         l["result"] = res
-        if res != "filled":
-            open_left += 1
         state.setdefault("orders", []).append({
             "at": ticket.ist_iso(now), "date": today, "status": "auto-close", "kind": "auto-close",
             "symbol": l["tradingsymbol"], "transaction_type": "SELL", "quantity": n, "order_id": o.get("order_id"),
@@ -408,11 +420,16 @@ def cmd_result(a, root, cfg, state, now):
         print("Line %d %s: %s (%d of %d)" % (l["line"], l["tradingsymbol"], res, n, l["quantity"]))
     ticket.write_json(path(root, "trader/close-plan.json"), plan)
     ticket.write_json(path(root, a.state), state)
-    if open_left:
-        print("%d line%s did not fully close. %s" % (
-            open_left, "" if open_left == 1 else "s",
-            "Zerodha squares off what is still open at 15:12 (F&O list) or 15:25, for %s." % FEE if plan.get("retry")
-            else "One retry: get_orders and get_positions again, save them, closer.py plan --retry."))
+    lines = plan.get("lines") or []
+    again = [l["tradingsymbol"] for l in lines if l.get("result") in RETRY]
+    rest = [l["tradingsymbol"] for l in lines if l.get("result") not in RETRY + ("filled",)]
+    if again and not plan.get("retry"):
+        print("One retry for %d line%s (%s): get_orders and get_positions again, save them, closer.py plan --retry."
+              % (len(again), "" if len(again) == 1 else "s", ", ".join(again)))
+    left = rest + (again if plan.get("retry") else [])
+    if left:
+        print("Not retried (%s): Zerodha squares off what is still open at 15:12 (F&O list) or 15:25, for %s."
+              % (", ".join(left), FEE))
     return 0
 
 
