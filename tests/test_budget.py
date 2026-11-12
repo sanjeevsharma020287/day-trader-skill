@@ -166,6 +166,8 @@ class PlanRules(unittest.TestCase):
             code, text, _ = run(args)
             self.assertEqual(code, 0)
             self.assertIn("Last price %s3,428.50 (kite_ltp, 30 s old)." % R, text)
+            self.assertIn("The last price is above the entry limit: the order may not fill. An unfilled entry must be "
+                          "cancelled by 3:00 PM (the 3 pm close does it only once the owner records its gate).", text)
             with open(pp, "w") as fh:
                 json.dump(prices_doc(quote_time="2026-11-11T04:25:00Z"), fh)        # 9:55, 21 minutes old
             code, text, _ = run(args)

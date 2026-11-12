@@ -926,8 +926,9 @@ def run_plan(a, cfg):
                                                            else "%d s" % max(age, 0)))
             entry_px = limit if limit is not None else _f(plan.get("entry"))
             if entry_px and p > entry_px + 0.005:
-                notes.append("The last price is above the entry limit: the order may not fill, and an unfilled "
-                             "entry is cancelled at 3:00 PM. A higher --limit is a new plan: the risk grows.")
+                notes.append("The last price is above the entry limit: the order may not fill. An unfilled entry "
+                             "must be cancelled by 3:00 PM (the 3 pm close does it only once the owner records its "
+                             "gate). A higher --limit is a new plan: the risk grows.")
         elif p is not None:
             notes.append("%s in %s is %s: not used (older than %d minutes, or no time on it)."
                          % (sym, ppath, ("from " + to_ist(t).strftime("%Y-%m-%d %H:%M") + " India time")

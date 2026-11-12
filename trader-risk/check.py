@@ -357,6 +357,10 @@ def format_reasons(o, tag_want):
                        % o.get("validity"))
     if q is None or q <= 0 or q != int(q) or isinstance(qty, bool):
         reasons.append("format: quantity must be a whole number above 0, got %r" % (qty,))
+    texts = [k for k in ("quantity", "price", "trigger_price") if isinstance(o.get(k), str)]
+    if texts:   # P5, read from source: the kite MCP server reads a text quantity as 1 share, a text price as none
+        reasons.append("format: %s must be a JSON number, not text (the kite MCP server would read text "
+                       "quantity as 1 share)" % ", ".join(texts))
     if price is None or price <= 0:
         reasons.append("format: a %s order needs a price above 0" % (otype or "LIMIT"))
     elif not on_tick(price, tick):
@@ -443,7 +447,11 @@ def on_tick(price, tick):
     return abs(n - round(n)) < 1e-6
 
 
-def account(cfg, portfolio, prices):
+def account(cfg, portfolio, prices, today=None):
+    """Cash, what counts as held for a sell, and what each position is worth.
+    R35: only an MIS position from today (product "MIS", date today) is held for a sell. A CNC holding, an
+    older position or one with no product is valued in the account but never makes an MIS sell an exit:
+    at Zerodha that sell would be an intraday short."""
     warnings = []
     if portfolio is None:
         budget = _f(cfg.get("budget"))
@@ -460,10 +468,15 @@ def account(cfg, portfolio, prices):
         if not t:
             continue
         n = _f(p.get("quantity", p.get("shares", p.get("qty")))) or 0
-        shares[t] = shares.get(t, 0) + n
+        if str(p.get("product") or "").upper() == "MIS" and today and str(p.get("date") or "") == today:
+            shares[t] = shares.get(t, 0) + n
+        elif n:
+            warnings.append("%s: %s shares (product %s, from %s) are not held for an intraday sell; only today's "
+                            "MIS positions are" % (t, _num(n), p.get("product") or "not recorded",
+                                                   p.get("date") or "an unrecorded day"))
         px = (prices.get(t) or {}).get("price")
         avg = _f(p.get("average_price"))
-        values[t] = shares[t] * (px or avg or 0)
+        values[t] = values.get(t, 0.0) + n * (px or avg or 0)
         if not px:
             warnings.append("no price for %s: valued at %s" % (t, "its average price" if avg else "zero"))
     return {"cash": cash, "shares": shares, "values": values}, warnings
@@ -525,7 +538,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     for key in bad_numbers(c):
         c[key] = DEFAULTS[key]      # only so the arithmetic runs: cfg_bad already BLOCKs every order
     try:
-        acct, top_warn = account(c, portfolio, prices)
+        acct, top_warn = account(c, portfolio, prices, today)
     except RiskError:
         if not cfg_bad:
             raise
@@ -606,8 +619,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     last_px = pr["price"]
                     info.append("last price %s" % price_label(pr, now_utc))
                     if price and pr["price"] > price + PAISA:
-                        warns.append("the last price %s is above your limit %s: the order may not fill, and an "
-                                     "unfilled entry is cancelled at 3:00 PM" % (inr(pr["price"]), inr(price)))
+                        warns.append("the last price %s is above your limit %s: the order may not fill. An unfilled "
+                                     "entry must be cancelled by 3:00 PM (the 3 pm close does it only once the owner "
+                                     "records its gate)" % (inr(pr["price"]), inr(price)))
             if sym in blocked:
                 later.append("blocked: %s is on your blocked list" % sym)
             if value is not None:

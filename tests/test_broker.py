@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -8,546 +9,521 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from _load import load, ROOT, FIX
 
-# B2 moved trader-budget and trader-risk to Kite orders; trader-broker (ticket.py) and these tests are rewritten
-# in B3. Until then the whole module is skipped, visibly, rather than left failing.
-raise unittest.SkipTest("trader-broker is rewritten for Kite in B3")
-
 ticket = load("trader-broker", "ticket")
 check = load("trader-risk", "check")
 
 CFG_PATH = os.path.join(ROOT, "trader-budget", "config.example.json")
-ORDERS_PATH = os.path.join(FIX, "trader-risk", "orders-tsla.json")
-PLAN_PATH = os.path.join(FIX, "trader-budget", "plan-tsla.json")
-NOW = "2026-10-19 10:15"
-TODAY = "2026-10-19"
-AAPL = {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market", "time_in_force": "day"}
-BATCH = ["AAPL", "AXP", "GOOGL", "KO", "BAC"]
-TSLA_CALL = {"symbol": "TSLA", "side": "buy", "qty": "8", "type": "market", "time_in_force": "day",
-             "order_class": "bracket", "take_profit_limit_price": "370.04", "stop_loss_stop_price": "358.32"}
-TSLA_PLAIN = ("BUY 8 TSLA, market, good for today / stop-loss 358.32 / take-profit 370.04 / max loss about "
-              "$46.88 if the stop fills at 358.32 (it can fill worse in a fast market)")
+ORDERS_PATH = os.path.join(FIX, "trader-risk", "orders-mm.json")
+TODAY = "2026-11-11"                                  # a Wednesday, an NSE trading day
+R = "₹"
 
 
-def tsla(**over):
-    with open(ORDERS_PATH) as fh:
-        o = json.load(fh)["orders"][0]
-    o.update(over)
-    return o
+def utc(india):
+    """"2026-11-11 10:16" India time -> naive UTC."""
+    return datetime.datetime.strptime(india, "%Y-%m-%d %H:%M") - datetime.timedelta(hours=5, minutes=30)
 
 
-def run(argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = ticket.main(argv)
-    return code, out.getvalue(), err.getvalue()
+def cfg(**over):
+    with open(CFG_PATH) as fh:
+        c = json.load(fh)
+    c.update(over)
+    return c
 
 
-class ExplicitYes(unittest.TestCase):
-    def yes(self, reply, order=AAPL, batch=BATCH):
-        return ticket.parse_yes(reply, order, batch)[0]
-
-    def test_plain_yes_counts(self):
-        for r in ("yes", "Yes.", "YES", "y", "yes place it", "Yes, buy it", "yes AAPL", "yes $1,250 of AAPL",
-                  "yes 1250"):
-            self.assertTrue(self.yes(r), r)
-
-    def test_anything_else_does_not(self):
-        for r in ("", "sure", "ok", "okay", "go", "do it", "yeah", "yep", "absolutely", "send it",
-                  "yes to all", "yes, all of them", "yes to the rest", "yes both",
-                  "yes AXP", "yes 1000", "yes but make it 1000", "yes?", "no", "not yes",
-                  "yes, wait", "yes if it is under 340"):
-            self.assertFalse(self.yes(r), r)
-
-    def test_amount_must_match_this_order(self):
-        sell = {"symbol": "KO", "side": "sell", "qty": "3", "type": "market", "time_in_force": "day"}
-        self.assertTrue(self.yes("yes sell 3 KO", sell))
-        self.assertFalse(self.yes("yes sell 4", sell))
-
-    def test_a_bracket_yes(self):
-        o = tsla()
-        for r in ("yes", "yes 8 TSLA", "yes 358.32", "yes max loss 46.88", "yes target 370.04"):
-            self.assertTrue(self.yes(r, o, ["TSLA"]), r)
-        for r in ("yes 9", "yes 10 TSLA", "yes but stop at 357", "yes, stop 358.32", "yes AAPL", "sure"):
-            self.assertFalse(self.yes(r, o, ["TSLA", "AAPL"]), r)
+LIVE = dict(dry_run=False, b0_proven_on="2026-11-10")
 
 
-class TicketShape(unittest.TestCase):
-    def test_tool_input_is_the_alpaca_call(self):
-        o = dict(AAPL, why="from a list")
-        self.assertEqual(ticket.tool_input(o), AAPL)
-        self.assertEqual(ticket.tool_input({"symbol": "KO", "side": "buy", "qty": 3, "type": "limit",
-                                            "limit_price": 89.5, "time_in_force": "day"}),
-                         {"symbol": "KO", "side": "buy", "qty": "3", "type": "limit", "limit_price": "89.5",
-                          "time_in_force": "day"})
-
-    def test_the_bracket_call_leaves_out_why_and_plan(self):
-        self.assertEqual(ticket.tool_input(tsla()), TSLA_CALL)
-        self.assertEqual(ticket.fingerprint(tsla()), ticket.fingerprint(TSLA_CALL))
-
-    def test_plain_english(self):
-        self.assertEqual(ticket.plain(AAPL), "BUY $1,250 of AAPL, market order, good for today")
-        self.assertEqual(ticket.plain({"symbol": "KO", "side": "sell", "qty": "1", "type": "limit",
-                                       "limit_price": "95", "time_in_force": "gtc"}),
-                         "SELL 1 share of KO, limit order at $95, good until canceled")
-        self.assertEqual(ticket.plain(tsla()), TSLA_PLAIN)
-        lim = tsla(type="limit", limit_price="364.00")
-        self.assertEqual(ticket.plain(lim).split(" / ")[0], "BUY 8 TSLA, limit 364.00, good for today")
-        self.assertEqual(ticket.max_loss(lim), (45.44, 358.32))
-        no_plan = dict(TSLA_CALL)
-        self.assertEqual(ticket.max_loss(no_plan), (None, 358.32))
+def orders():
+    with open(ORDERS_PATH, encoding="utf-8") as fh:
+        return json.load(fh)["orders"]
 
 
-class DesktopConfig(unittest.TestCase):
-    def test_example_is_paper_with_placeholder_keys(self):
-        with open(os.path.join(ROOT, "trader-broker", "claude_desktop_config.example.json")) as fh:
-            server = json.load(fh)["mcpServers"]["alpaca"]
-        self.assertEqual((server["command"], server["args"]), ("uvx", ["alpaca-mcp-server"]))
-        self.assertEqual(server["env"]["ALPACA_PAPER_TRADE"], "true")
-        for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
-            self.assertIn("NEVER_IN_CHAT", server["env"][k])
+def risk_for(os_, at="2026-11-11 10:16", check_id="chk1", c=None, ran_at=None, **over):
+    """trader/state/risk.json as check.py writes it: the check on the clock `at`, run (checked_at) at `ran_at`."""
+    now = utc(at)
+    p = check.load_prices({"prices": {"M&M": 3428.5},
+                           "detail": {"M&M": {"source": "yahoo", "time": (now - datetime.timedelta(seconds=30))
+                                              .strftime("%Y-%m-%dT%H:%M:%SZ")}}})
+    res = check.check(os_, c or cfg(), None, p, None, None, now)
+    res["checked_at"] = utc(ran_at or at).strftime("%Y-%m-%dT%H:%M:%SZ")
+    res["check_id"] = check_id
+    res.update(over)
+    return res
 
 
-class Flow(unittest.TestCase):
+class Clocked(unittest.TestCase):
+    """Every test runs on a pinned real clock: ticket.real_now is the only clock ticket.py reads (R36)."""
+    CLOCK = "2026-11-11 10:17"
+
     def setUp(self):
+        self._real = ticket.real_now
+        self.set_clock(self.CLOCK)
+
+    def tearDown(self):
+        ticket.real_now = self._real
+
+    def set_clock(self, india):
+        t = utc(india)
+        ticket.real_now = lambda: t
+
+    def status(self, os_, idx=1, risk=None, state=None, now=None):
+        return ticket.status_of(os_, idx, risk if risk is not None else risk_for(os_), state or {"orders": []},
+                                TODAY, utc(now or self.CLOCK))
+
+
+# ---------------------------------------------------------------- R14: real orders are the owner's to unlock
+
+class B0Gate(unittest.TestCase):
+    def test_dry_run_unless_false_and_b0_recorded(self):
+        self.assertEqual(ticket.mode({}, TODAY)[0], "dry_run")
+        self.assertEqual(ticket.mode(cfg(), TODAY), ("dry_run", "DRY RUN, nothing is sent"))
+        self.assertEqual(ticket.mode(cfg(dry_run="false", b0_proven_on="2026-11-10"), TODAY)[0], "dry_run")
+        self.assertEqual(ticket.mode(cfg(**LIVE), TODAY), ("live", "LIVE, REAL MONEY (B0 recorded on 2026-11-10)"))
+        self.assertEqual(ticket.mode(cfg(dry_run=False, b0_proven_on=TODAY), TODAY)[0], "live")
+
+    def test_absent_bad_and_future_dates_block(self):
+        for v, why in ((None, "b0_proven_on is not recorded"), ("", "b0_proven_on is not recorded"),
+                       ("13/11/2026", "b0_proven_on '13/11/2026' is not a date like"),
+                       (20261110, "b0_proven_on 20261110 is not a date like"),
+                       ("2026-02-30", "b0_proven_on '2026-02-30' is not a real date"),
+                       ("2026-11-12", "b0_proven_on 2026-11-12 is in the future (today is 2026-11-11 in India)")):
+            c = cfg(dry_run=False)
+            if v is not None:
+                c["b0_proven_on"] = v
+            m, line = ticket.mode(c, TODAY)
+            self.assertEqual(m, "dry_run", v)
+            self.assertIn(why, line)
+            self.assertIn("real orders stay blocked until the owner records B0 by hand", line)
+
+    def test_no_tool_writes_the_owner_keys(self):
+        # R14: both keys are the owner's hand edit. No example config ships them, and no code writes them
+        # (a dict literal, an item assignment, a keyword argument or setdefault).
+        for folder in sorted(f for f in os.listdir(ROOT) if f.startswith("trader-")):
+            for name in os.listdir(os.path.join(ROOT, folder)):
+                if not (name.endswith(".py") or name.endswith(".json")):
+                    continue
+                with open(os.path.join(ROOT, folder, name), encoding="utf-8") as fh:
+                    text = fh.read()
+                for key in ("b0_proven_on", "close_gate_proven_on"):
+                    if name.endswith(".json"):
+                        self.assertNotIn(key, text, (folder, name))
+                        continue
+                    for written in ('"%s":' % key, '["%s"] =' % key, "%s=" % key, 'setdefault("%s"' % key):
+                        self.assertNotIn(written, text, (folder, name, written))
+
+
+class CloseGate(unittest.TestCase):
+    # R17: while close_gate_proven_on is unset the yes says the 3 pm close is not active.
+    def test_the_words_until_the_owner_records_it(self):
+        lines = ticket.close_gate_lines(cfg(), TODAY)
+        self.assertEqual(len(lines), 1)
+        for words in ("The 3 pm close is not active (close_gate_proven_on is not recorded)",
+                      "a resting BUY can still fill after 15:00", "at 15:12 (F&O list) or 15:25",
+                      "for %s50 + GST an order" % R):
+            self.assertIn(words, lines[0])
+        self.assertEqual(len(ticket.close_gate_lines(cfg(close_gate_proven_on="2026-12-01"), TODAY)), 1)
+        self.assertEqual(ticket.close_gate_lines(cfg(close_gate_proven_on="2026-11-10"), TODAY), [])
+
+
+# ---------------------------------------------------------------- the order as sent
+
+class Order(unittest.TestCase):
+    def test_tool_input_is_the_kite_fields_as_numbers(self):
+        e, s = orders()
+        self.assertEqual(ticket.tool_input(e), {
+            "variety": "regular", "exchange": "NSE", "tradingsymbol": "M&M", "transaction_type": "BUY",
+            "quantity": 32, "product": "MIS", "order_type": "LIMIT", "price": 3427.0, "validity": "DAY",
+            "tag": "traderpack"})
+        self.assertEqual(ticket.tool_input(s)["trigger_price"], 3384.4)
+
+    def test_text_numbers_are_never_sent(self):
+        # P5, read from source: the kite MCP server reads a missing or text quantity as 1 share.
+        e, _ = orders()
+        for over in ({"quantity": "32"}, {"quantity": None}, {"quantity": 32.5}, {"quantity": True},
+                     {"price": "3427.0"}):
+            with self.assertRaises(ticket.TicketError, msg=over):
+                ticket.tool_input(dict(e, **over))
+
+    def test_same_fingerprint_as_trader_risk(self):
+        for o in orders():
+            self.assertEqual(ticket.fingerprint(o), check.fingerprint(o))
+        self.assertEqual(ticket.KITE_FIELDS, check.KITE_FIELDS)
+
+    def test_plain_words(self):
+        e, s = orders()
+        self.assertEqual(ticket.plain(e), "BUY 32 M&M, limit 3427.00, intraday (MIS), good for today")
+        self.assertEqual(ticket.plain(s), "SELL 32 M&M, stop-loss: trigger 3384.40, limit 3367.40, intraday (MIS), "
+                                          "good for today")
+
+
+class Yes(unittest.TestCase):
+    def ok(self, reply, others=("M&M", "SBIN")):
+        e, s = orders()
+        return ticket.parse_yes(reply, e, others, s, {"max_loss": 1992.76})[0]
+
+    def test_only_a_plain_yes_for_this_ticket(self):
+        for reply in ("yes", "Yes, M&M", "y", "yes 32", "yes 3427", "yes 3384.4", "yes 1,992.76", "yes 3469.6"):
+            self.assertTrue(self.ok(reply), reply)
+        for reply in ("ok", "sure", "go", "", "yes?", "yes to all", "yes both", "yes but wait", "yes if it dips",
+                      "yes 33", "yes SBIN", "no"):
+            self.assertFalse(self.ok(reply), reply)
+
+
+# ---------------------------------------------------------------- READY, on the real clock
+
+class Ready(Clocked):
+    def test_the_pair_is_one_ticket(self):
+        os_ = orders()
+        ready, label, rv = self.status(os_)
+        self.assertEqual((ready, label), (True, "READY: trader-risk PASS on the pair, waiting for your yes"))
+        ready, label, _ = self.status(os_, 2)
+        self.assertFalse(ready)
+        self.assertEqual(label, "the stop of order 1: it goes in after that entry fills (ticket.py stop --index 1)")
+
+    def test_a_blocked_or_missing_stop_leg_blocks_the_entry(self):
+        os_ = orders()
+        risk = risk_for(os_)
+        risk["results"][1] = dict(risk["results"][1], verdict="BLOCK", reasons=["format: x"])
+        ready, label, _ = self.status(os_, risk=risk)
+        self.assertEqual((ready, label), (False, "BLOCKED by trader-risk: its stop (order 2): format: x"))
+        risk["results"] = risk["results"][:1]
+        ready, label, _ = self.status(os_, risk=risk)
+        self.assertFalse(ready)
+        self.assertTrue(label.startswith("NOT READY: its stop (order 2): this exact order was not in the last"), label)
+
+    def test_a_changed_order_needs_a_new_check(self):
+        os_ = orders()
+        risk = risk_for(os_)
+        os_[0]["quantity"] = 31
+        ready, label, _ = self.status(os_, risk=risk)
+        self.assertFalse(ready)
+        self.assertIn("this exact order was not in the last risk check", label)
+
+    def test_a_pinned_check_is_refused(self):
+        # R36: check.py --now 10:16 run for real at 10:20, or --today another day.
+        os_ = orders()
+        ready, label, _ = self.status(os_, risk=risk_for(os_, at="2026-11-11 10:16", ran_at="2026-11-11 10:20"))
+        self.assertFalse(ready)
+        self.assertEqual(label, "NOT READY: the risk check was run with a pretended clock (it says 2026-11-11 "
+                                "10:16, but it ran at 2026-11-11 10:20 India time); run check.py again without "
+                                "--now or --today")
+        ready, label, _ = self.status(os_, risk=risk_for(os_, date="2026-11-12"))
+        self.assertTrue(label.startswith("NOT READY: the risk check is from 2026-11-12, not today"), label)
+        risk = risk_for(os_)
+        del risk["checked_at"]
+        self.assertIn("no checked_at time", self.status(os_, risk=risk)[1])
+        risk = risk_for(os_)
+        del risk["check_id"]
+        self.assertEqual(self.status(os_, risk=risk)[1], "NOT READY: the risk check has no check id; run check.py "
+                                                         "again (without --no-write)")
+
+    def test_the_check_holds_fifteen_minutes(self):
+        os_ = orders()
+        self.assertTrue(self.status(os_, now="2026-11-11 10:31")[0])
+        ready, label, _ = self.status(os_, now="2026-11-11 10:32")
+        self.assertEqual(label, "NOT READY: the risk check is 16 minutes old (from 10:16 India time; it holds 15); "
+                                "run check.py again")
+        self.assertIn("timed after now", self.status(os_, now="2026-11-11 10:14")[1])
+
+    def test_the_window_is_judged_on_the_real_clock(self):
+        # R36: a check made at 14:50 is fresh at 15:00, but 15:00 is the owner's line.
+        os_ = orders()
+        risk = risk_for(os_, at="2026-11-11 14:50")
+        self.assertTrue(self.status(os_, risk=risk, now="2026-11-11 14:59")[0])
+        ready, label, _ = self.status(os_, risk=risk, now="2026-11-11 15:00")
+        self.assertEqual(label, "NOT READY: no new entries from 15:00 India time (it is 15:00)")
+        risk = risk_for(os_, at="2026-11-11 10:16", entries_until="10:20")
+        for r in risk["results"]:
+            r["entries_until"] = "10:20"
+        self.assertIn("no new entries from 10:20", self.status(os_, risk=risk, now="2026-11-11 10:20")[1])
+
+    def test_window_now_for_entries_and_exits(self):
+        e, s = orders()
+        w = lambda o, kind, at: ticket.window_now(o, {"kind": kind}, {}, utc(at))
+        self.assertEqual(w(e, "entry", "2026-11-11 09:29"), "no orders before 09:30 India time (it is 09:29)")
+        self.assertIsNone(w(e, "entry", "2026-11-11 09:30"))
+        self.assertIn("no NSE session for this pack today (weekend)", w(e, "entry", "2026-11-14 10:00"))
+        self.assertIn("no NSE session", w(e, "entry", "2026-11-10 10:00"))                    # Diwali holiday
+        self.assertIsNone(w(s, "exit", "2026-11-11 15:11"))                                   # fo true: 15:12
+        self.assertIn("09:15 to 15:12", w(s, "exit", "2026-11-11 15:12"))
+        self.assertIsNone(w(dict(s, fo=False), "exit", "2026-11-11 15:24"))
+        self.assertIn("09:15 to 15:25", w(dict(s, fo=False), "exit", "2026-11-11 15:25"))
+        self.assertIn("09:15 to 15:12", w(dict(s, fo=None), "exit", "2026-11-11 15:13"))      # unknown: F&O
+        self.assertIn("it is 09:14", w(s, "exit", "2026-11-11 09:14"))
+
+
+# ---------------------------------------------------------------- the flow through the CLI
+
+class Flow(Clocked):
+    def setUp(self):
+        super().setUp()
         self.d = tempfile.mkdtemp()
-        self.orders = os.path.join(self.d, "orders.json")
-        shutil.copy(ORDERS_PATH, self.orders)
-        self.cfg = os.path.join(self.d, "config.json")
-        shutil.copy(CFG_PATH, self.cfg)
-        self.risk = os.path.join(self.d, "state", "risk.json")
-        self.state = os.path.join(self.d, "state", "broker.json")
-        self.pf = os.path.join(self.d, "portfolio.json")
-        self.none = os.path.join(self.d, "none")
+        self.p = {k: os.path.join(self.d, k + ".json") for k in ("orders", "config", "risk", "state", "portfolio")}
+        with open(ORDERS_PATH, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.write("orders", doc)
+        self.write("config", cfg(**LIVE))
+        self.write("risk", risk_for(doc["orders"]))
 
     def tearDown(self):
         shutil.rmtree(self.d)
+        super().tearDown()
 
-    def args(self, *extra, **kw):
-        return list(extra) + ["--orders", self.orders, "--config", self.cfg, "--risk", self.risk,
-                              "--state", self.state, "--now", kw.get("now", NOW)]
+    def write(self, k, data):
+        with open(self.p[k], "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
 
-    def run_risk(self, now=NOW):
-        with redirect_stdout(io.StringIO()):
-            return check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf,
-                               "--prices", self.none, "--state", self.state, "--now", now, "--out", self.risk])
-
-    def state_doc(self):
-        with open(self.state) as fh:
+    def read(self, k):
+        with open(self.p[k], encoding="utf-8") as fh:
             return json.load(fh)
 
-    def test_nothing_is_ready_before_the_risk_check(self):
-        code, text, _ = run(self.args("show"))
-        self.assertEqual(code, 1)
-        self.assertIn("NOT READY", text)
-        self.assertNotIn("Reply \"yes\"", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes"))
-        self.assertEqual(code, 1)
-        self.assertIn("not ready", err)
+    def run_(self, *argv, files=("orders", "config", "risk", "state")):
+        args = list(argv)
+        for k in files:
+            args += ["--" + k, self.p[k]]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = ticket.main(args)
+        return code, out.getvalue(), err.getvalue()
 
-    def test_the_full_two_yes_flow(self):
-        self.assertEqual(self.run_risk(), 0)
-        code, text, _ = run(self.args("show", "--index", "1"))
+    def test_show_the_pair(self):
+        code, out, _ = self.run_("show")
         self.assertEqual(code, 0)
-        self.assertIn("ORDER 1 of 1, PAPER account, Alpaca", text)
-        for part in TSLA_PLAIN.split(" / "):
-            self.assertIn("  " + part + "\n", text)
-        self.assertIn("READY: trader-risk PASS", text)
-        self.assertIn('"order_class": "bracket"', text)
-        self.assertIn('"stop_loss_stop_price": "358.32"', text)
-        self.assertNotIn('"plan"', text)
-        self.assertNotIn('"why"', text)
-        self.assertIn("Allow once", text)
+        for words in ("ORDER 1 of 2: LIVE, REAL MONEY (B0 recorded on 2026-11-10) (Zerodha Kite, NSE)",
+                      "  BUY 32 M&M, limit 3427.00, intraday (MIS), good for today",
+                      "  its stop, order 2: SELL 32 M&M, stop-loss: trigger 3384.40, limit 3367.40, intraday (MIS), "
+                      "good for today; it goes in only after this buy fills, for the filled quantity",
+                      "  target 3469.60: an alert, not an order",
+                      "  max loss about %s1,992.76 at the stop's limit, including %s85.56 estimated charges" % (R, R),
+                      "  last price %s3,428.50 (yahoo, 30 s old)" % R,
+                      "  READY: trader-risk PASS on the pair, waiting for your yes",
+                      '      "quantity": 32,', '      "tag": "traderpack"',
+                      "  Reply \"yes\" to this pair (the buy, then its stop), or \"no\" to skip it.",
+                      "  The 3 pm close is not active (close_gate_proven_on is not recorded)",
+                      "ORDER 2 of 2", "  the stop of order 1: it goes in after that entry fills"):
+            self.assertIn(words, out)
 
-        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "sure"))
-        self.assertEqual(code, 1)
-        self.assertIn("Not recorded", text)
-        self.assertFalse(os.path.exists(self.state))
-
-        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes"))
+    def test_dry_run_records_the_yes_and_sends_nothing(self):
+        self.write("config", cfg())
+        code, out, _ = self.run_("show")
+        self.assertIn("ORDER 1 of 2: DRY RUN, nothing is sent (Zerodha Kite, NSE)", out)
+        self.assertIn("Dry run: after the yes, Claude does not call place_order.", out)
+        code, out, _ = self.run_("approve", "--index", "1", "--reply", "yes")
         self.assertEqual(code, 0)
-        self.assertIn("place_stock_order", text)
-        self.assertEqual(json.loads(text[text.index("{"):text.rindex("}") + 1]), TSLA_CALL)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes"))
-        self.assertEqual(code, 1)
-        self.assertIn("APPROVED", err)
+        self.assertIn("DRY RUN, nothing is sent. Do not call place_order. This is the input it would get:", out)
+        self.assertNotIn("Now call place_order", out)
+        rec = self.read("state")["orders"][-1]
+        self.assertEqual((rec["status"], rec["mode"]), ("dry_run", "dry_run"))
+        code, out, _ = self.run_("show")
+        self.assertIn("DONE: dry_run at 2026-11-11T10:17:00+05:30", out)
+        self.assertEqual(self.run_("stop", "--index", "1", "--filled-qty", "32")[0], 1)
+        code, _, err = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
+        self.assertIn("order 1 has no live yes recorded today", err)       # a dry run has nothing to record
 
-        code, text, _ = run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc123",
-                                      "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf,
-                                      now="2026-10-19 10:16"))
+    def test_live_flow_entry_then_stop_for_the_filled_quantity(self):
+        code, out, _ = self.run_("approve", "--index", "1", "--reply", "yes, M&M")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Recorded your yes for order 1 and its stop (order 2)", out)
+        self.assertIn("Now call place_order with exactly:", out)
+        self.assertIn("Never retry a failed call", out)
+        self.assertIn("The 3 pm close is not active", out)
+        rec = self.read("state")["orders"][-1]
+        self.assertEqual((rec["status"], rec["kind"], rec["max_loss"], rec["risk_check"], rec["symbol"],
+                          rec["transaction_type"]), ("approved", "entry", 1992.76, "chk1", "M&M", "BUY"))
+        self.assertIn("APPROVED by you at", self.run_("show")[1])
+        # the stop cannot go before the entry is recorded as placed
+        code, _, err = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        self.assertEqual(code, 1)
+        self.assertIn("is not recorded as placed today", err)
+        code, _, err = self.run_("result", "--index", "1", "--status", "placed")
+        self.assertIn("placed needs --order-id", err)
+        code, out, _ = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "251111000000001")
         self.assertEqual(code, 0)
-        st = self.state_doc()
-        self.assertEqual([r["status"] for r in st["orders"]], ["approved", "placed", "filled"])
-        appr, plc = st["orders"][0], st["orders"][1]
-        self.assertEqual((appr["reply"], appr["kind"], appr["max_loss"], appr["date"]), ("yes", "entry", 46.88, TODAY))
-        self.assertEqual(appr["at"], "2026-10-19T10:15:00-04:00")
-        self.assertEqual((plc["broker_order_id"], plc["max_loss"], plc["kind"]), ("abc123", 46.88, "entry"))
+        self.assertIn("UNPROTECTED: M&M x 32 bought with order 1 (Kite order_id 251111000000001) has no stop placed",
+                      out)
+        self.assertIn("UNPROTECTED", self.run_("show")[1])
+        for bad in ("33", "0", "20.5"):
+            self.assertEqual(self.run_("stop", "--index", "1", "--filled-qty", bad)[0], 1, bad)
+        self.assertEqual(self.run_("stop", "--index", "2", "--filled-qty", "20")[0], 1)    # the entry's number
+        code, out, _ = self.run_("stop", "--index", "1", "--filled-qty", "20")
+        self.assertEqual(code, 0)
+        self.assertIn('"quantity": 20,', out)
+        self.assertIn('"trigger_price": 3384.4', out)
+        self.assertIn("covers only these 20 shares", out)
+        self.assertEqual(self.read("state")["orders"][-1]["status"], "stop_ready")
+        self.assertIn("UNPROTECTED", self.run_("show")[1])                 # prepared is not placed
+        code, out, _ = self.run_("result", "--index", "2", "--status", "placed", "--order-id", "251111000000002")
+        self.assertEqual(code, 0)
+        self.assertNotIn("UNPROTECTED", self.run_("show")[1])
+        placed = [r for r in self.read("state")["orders"] if r["status"] == "placed"]
+        self.assertEqual([(r["leg"], r["quantity"], r["order_id"]) for r in placed],
+                         [("entry", 32, "251111000000001"), ("stop", 20, "251111000000002")])
+
+    def test_a_real_position_keeps_its_stop_after_a_switch_to_dry_run(self):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
+        self.write("config", cfg())                                       # the owner switches back to dry run
+        code, out, _ = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        self.assertEqual(code, 0)
+        self.assertIn('"quantity": 32,', out)
+
+    def test_the_stop_waits_for_the_exit_session(self):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
+        self.set_clock("2026-11-11 15:12")
+        code, _, err = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        self.assertEqual(code, 1)
+        self.assertIn("the stop cannot go in now: outside the session for an exit (09:15 to 15:12", err)
+
+    def test_a_yes_expires_and_a_new_check_holds_it(self):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        self.set_clock("2026-11-11 10:32")
+        self.assertIn("EXPIRED: your yes at 2026-11-11T10:17:00+05:30 no longer holds (the risk check is 16 "
+                      "minutes old", self.run_("show")[1])
+        self.write("risk", risk_for(self.read("orders")["orders"], at="2026-11-11 10:31", check_id="chk2"))
+        self.assertIn("NOT READY: your yes at 2026-11-11T10:17:00+05:30 was on an earlier check",
+                      self.run_("show")[1])
+        self.run_("result", "--index", "1", "--status", "unsent")
+        self.assertIn("READY: trader-risk PASS on the pair", self.run_("show")[1])
+
+    def test_refusals(self):
+        code, out, _ = self.run_("approve", "--index", "1", "--reply", "sure")
+        self.assertEqual(code, 1)
+        self.assertIn("Not recorded: only a reply that starts with \"yes\" counts", out)
+        code, _, err = self.run_("approve", "--index", "2", "--reply", "yes")
+        self.assertIn("order 2 is not ready: the stop of order 1", err)
+        self.set_clock("2026-11-11 15:00")
+        self.write("risk", risk_for(self.read("orders")["orders"], at="2026-11-11 14:59"))
+        code, _, err = self.run_("approve", "--index", "1", "--reply", "yes")
+        self.assertIn("no new entries from 15:00 India time", err)
+        code, _, err = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "x")
+        self.assertIn("order 1 has no live yes recorded today", err)
+
+    def test_a_failed_call_is_never_retried(self):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        code, out, _ = self.run_("result", "--index", "1", "--status", "failed")
+        self.assertIn("Do not retry. Read get_orders: its status_message says why", out)
+
+    def test_there_is_no_pretend_clock(self):
+        # R36: the yes is judged on the real clock only.
+        with redirect_stderr(io.StringIO()):
+            for cmd in ("show", "approve", "result", "stop", "log", "fill", "flatten"):
+                with self.assertRaises(SystemExit, msg=cmd):
+                    ticket.main([cmd, "--now", "2026-11-11 10:16"])
+
+    def test_json_ticket(self):
+        code, out, _ = self.run_("show", "--index", "1", "--json")
+        t = json.loads(out)
+        self.assertEqual((t["ready"], t["mode"], t["tool"], t["stop_index"], t["max_loss"], t["close_gate"]),
+                         (True, "live", "place_order", 2, 1992.76, False))
+        self.assertEqual(t["tool_input"]["quantity"], 32)
+
+    def test_log(self):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        self.run_("result", "--index", "1", "--status", "placed", "--order-id", "77")
+        code, out, _ = self.run_("log", files=("state",))
+        self.assertIn('#1 approved   BUY 32 M&M, limit 3427.00, intraday (MIS), good for today reply "yes"', out)
+        self.assertIn("#1 placed     BUY 32 M&M, limit 3427.00, intraday (MIS), good for today max loss %s1,992.76 "
+                      "order_id 77" % R, out)
+        self.assertIn("1 placed today.", out)
+
+
+# ---------------------------------------------------------------- fills, R35 and flatten
+
+class Positions(Clocked):
+    def setUp(self):
+        super().setUp()
+        self.d = tempfile.mkdtemp()
+        self.pf = os.path.join(self.d, "portfolio.json")
+        self.st = os.path.join(self.d, "broker.json")
+        self.ords = os.path.join(self.d, "orders.json")
+        self.cfgp = os.path.join(self.d, "config.json")
+        with open(self.cfgp, "w") as fh:
+            json.dump(cfg(**LIVE), fh)
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+        super().tearDown()
+
+    def run_(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = ticket.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def fill(self, side, qty, price="3427", date=None):
+        args = ["fill", "--symbol", "M&M", "--side", side, "--qty", qty, "--price", price, "--portfolio", self.pf,
+                "--state", self.st, "--config", self.cfgp]
+        return self.run_(*(args + (["--date", date] if date else [])))
+
+    def test_a_fill_is_todays_mis_position(self):
+        self.assertEqual(self.fill("buy", "32")[0], 0)
         with open(self.pf) as fh:
             pf = json.load(fh)
-        self.assertEqual(pf["cash"], 2086.4)
-        self.assertEqual(pf["positions"][0]["shares"], 8)
+        self.assertEqual(pf["positions"], [{"tradingsymbol": "M&M", "exchange": "NSE", "product": "MIS",
+                                            "date": TODAY, "quantity": 32, "average_price": 3427.0}])
+        self.assertEqual(pf["cash"], 200000 - 109664.0)
+        # R35 end to end: trader-risk sees today's MIS position as held, and yesterday's as not
+        sell = dict(orders()[1], order_type="LIMIT", trigger_price=None, price=3400.0, leg="exit")
+        r = check.check([sell], cfg(), pf, {}, None, None, utc("2026-11-11 10:30"))["results"][0]
+        self.assertEqual((r["kind"], r["verdict"]), ("exit", "PASS"))
+        r = check.check([sell], cfg(), pf, {}, None, None, utc("2026-11-12 10:30"))["results"][0]
+        self.assertEqual((r["kind"], r["verdict"]), ("entry", "BLOCK"))
+        self.assertEqual(self.fill("sell", "40")[0], 1)
+        self.assertEqual(self.fill("sell", "32", "3460")[0], 0)
+        with open(self.pf) as fh:
+            self.assertEqual(json.load(fh)["positions"], [])
+        self.assertEqual(self.fill("buy", "32.5")[0], 1)
 
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("DONE: placed", text)
-        code, text, _ = run(["log", "--state", self.state, "--now", NOW])
-        self.assertIn("1 placed today", text)
-        self.assertIn("max loss $46.88", text)
+    def test_flatten_writes_a_limit_sell_on_the_tick(self):
+        uni = os.path.join(self.d, "universe.txt")
+        with open(uni, "w") as fh:
+            fh.write("M&M|Mahindra & Mahindra|0.1|FO\n")
+        base = ["flatten", "--symbol", "M&M", "--orders", self.ords, "--portfolio", self.pf, "--config", self.cfgp,
+                "--universe", uni]
+        code, _, err = self.run_(*(base + ["--price", "3460.5"]))
+        self.assertIn("nothing to flatten: no MIS position of M&M today", err)
+        self.fill("buy", "32")
+        self.fill("buy", "5", date="2026-11-10")              # yesterday's: not today's position
+        code, _, err = self.run_(*(base + ["--price", "3460.55"]))
+        self.assertIn("--price 3460.55 is off the 0.1 tick", err)
+        code, out, _ = self.run_(*(base + ["--price", "3460.5"]))
+        self.assertEqual(code, 0, out)
+        with open(self.ords, encoding="utf-8") as fh:
+            o = json.load(fh)["orders"][0]
+        self.assertEqual(ticket.tool_input(o), {
+            "variety": "regular", "exchange": "NSE", "tradingsymbol": "M&M", "transaction_type": "SELL",
+            "quantity": 32, "product": "MIS", "order_type": "LIMIT", "price": 3460.5, "validity": "DAY",
+            "tag": "traderpack"})
+        self.assertEqual((o["leg"], o["fo"], o["tick"]), ("exit", True, 0.1))
+        code, _, err = self.run_(*(base[:-2] + ["--universe", "none.txt", "--price", "3460.5"]))
+        self.assertIn("no tick size for M&M: pass --tick", err)
 
-        # trader-risk now counts it: a second TSLA buy today is a duplicate, and $46.88 is used
-        res = check.check([tsla()], {"budget": 5000}, state=st, now=check.parse_now("2026-10-19 10:30"))
-        self.assertIn("already placed today", " ".join(res["results"][0]["reasons"]))
-        self.assertEqual((res["today"]["entries_placed"], res["today"]["loss_at_risk"]), (1, 46.88))
-
-    def test_flatten_by_the_close(self):
-        self.run_risk()
-        run(self.args("approve", "--index", "1", "--reply", "yes"))
-        run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc",
-                      "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf))
-        late = "2026-10-19 15:55"
-        code, text, _ = run(["flatten", "--symbol", "TSLA", "--orders", self.orders, "--portfolio", self.pf,
-                             "--plan", PLAN_PATH, "--config", self.cfg, "--now", late])
-        self.assertEqual(code, 0)
-        self.assertIn("SELL 8 shares of TSLA, market order, good for today (flat by 15:55 New York)", text)
-        self.assertIn("replaced 1 earlier proposal", text)
-        self.assertIn("cancel_order_by_id", text)
-        with open(self.orders) as fh:
-            doc = json.load(fh)
-        self.assertEqual(ticket.tool_input(doc["orders"][0]),
-                         {"symbol": "TSLA", "side": "sell", "qty": "8", "type": "market", "time_in_force": "day"})
-        self.assertEqual(self.run_risk(now=late), 0)       # after the 15:30 entry cutoff: an exit still passes
-        with open(self.risk) as fh:
-            self.assertEqual(json.load(fh)["results"][0]["kind"], "exit")
-        code, text, _ = run(self.args("show", now=late))
-        self.assertEqual(code, 0)
-        self.assertIn("READY", text)
-        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes sell 8 TSLA", now=late))[0], 0)
-        code, _, _ = run(self.args("result", "--index", "1", "--status", "placed", "--filled-qty", "8",
-                                   "--filled-price", "366.10", "--portfolio", self.pf, now="2026-10-19 15:56"))
-        self.assertEqual(code, 0)
+    def test_an_exit_cancels_the_stop_first(self):
+        os_ = orders()
+        state = {"orders": [{"date": TODAY, "status": "placed", "leg": "stop", "symbol": "M&M", "order_id": "S9",
+                             "pair": os_[0]["pair"]}]}
+        with open(self.st, "w") as fh:
+            json.dump(state, fh)
+        self.fill("buy", "32")
+        with open(self.st) as fh:                              # the fill appended to the log
+            state = json.load(fh)
+        exit_ = dict(os_[1], order_type="LIMIT", trigger_price=None, price=3460.5, leg="exit", pair=None)
+        with open(self.ords, "w", encoding="utf-8") as fh:
+            json.dump({"orders": [exit_]}, fh)
         with open(self.pf) as fh:
             pf = json.load(fh)
-        self.assertEqual((pf["cash"], pf["positions"]), (5015.2, []))
-        self.assertEqual(check.day_trades(self.state_doc(), TODAY), (1, ["2026-10-19 TSLA"]))
-        code, _, err = run(["flatten", "--symbol", "TSLA", "--orders", self.orders, "--portfolio", self.pf,
-                            "--now", late])
-        self.assertEqual(code, 1)
-        self.assertIn("nothing to flatten", err)
-
-    def test_flatten_with_the_broker_qty(self):
-        code, text, _ = run(["flatten", "--symbol", "tsla", "--qty", "8", "--orders", self.orders,
-                             "--portfolio", self.none, "--plan", self.none, "--config", self.cfg, "--now", NOW])
-        self.assertEqual(code, 0)
-        self.assertNotIn("Check it against get_open_position", text)
-        self.assertEqual(run(["flatten", "--symbol", "TSLA", "--qty", "0", "--orders", self.orders])[0], 1)
-
-    def test_an_edited_order_is_not_ready(self):
-        self.run_risk()
-        with open(self.orders) as fh:
-            doc = json.load(fh)
-        doc["orders"][0]["qty"] = "9"
-        with open(self.orders, "w") as fh:
-            json.dump(doc, fh)
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertEqual(code, 1)
-        self.assertIn("was not in the last risk check", text)
-
-    def test_yesterdays_check_does_not_count(self):
-        self.run_risk(now="2026-10-16 10:15")
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("not today", text)
-
-    def risk_doc(self, **change):
-        with open(self.risk) as fh:
-            doc = json.load(fh)
-        for k, v in change.items():
-            for d in [doc] + (doc["results"] if k == "entries_until" else []):  # the file's and each order's
-                if v is None:
-                    d.pop(k, None)
-                else:
-                    d[k] = v
-        with open(self.risk, "w") as fh:
-            json.dump(doc, fh)
-
-    def test_a_pass_holds_for_15_minutes(self):
-        self.assertEqual(self.run_risk(), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:30"))
-        self.assertEqual(code, 0)
-        self.assertIn("READY: trader-risk PASS", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
-        self.assertEqual(code, 1)
-        self.assertIn("NOT READY: the risk check is 16 minutes old (from 10:15 New York; it holds 15)", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:31"))
-        self.assertEqual(code, 1)
-        self.assertIn("16 minutes old", err)
-        self.assertFalse(os.path.exists(self.state))
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:14"))
-        self.assertIn("NOT READY: the risk check is timed 10:15 New York, after now (10:14)", text)
-
-    def test_a_pass_before_the_cutoff_is_no_yes_after_it(self):
-        # the review's case: PASS at 15:29, then a yes after the window or the close
-        self.assertEqual(self.run_risk(now="2026-10-19 15:29"), 0)
-        with open(self.risk) as fh:
-            self.assertEqual(json.load(fh)["entries_until"], "15:30")
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:30"))
-        self.assertIn("READY: trader-risk PASS", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:31"))
-        self.assertIn("NOT READY: no new entries after 15:30 New York today (it is 15:31)", text)
-        for late in ("2026-10-19 15:31", "2026-10-19 16:30"):
-            code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now=late))
-            self.assertEqual(code, 1, late)
-            self.assertIn("not ready", err)
-        self.assertFalse(os.path.exists(self.state))
-
-    def test_the_cutoff_follows_the_risk_check(self):
-        self.run_risk()
-        self.risk_doc(entries_until="")
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("NOT READY: the market is closed today", text)
-        self.risk_doc(entries_until=None)
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("NOT READY: the risk check is from an older trader-risk", text)
-        self.risk_doc(now_new_york=None, entries_until="15:30")
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("NOT READY: the risk check has no time on it", text)
-
-    def test_a_yes_left_open_expires_with_its_pass(self):
-        # Fable R1: a yes at 15:29 with the card left open must not read as "place it" at 16:30
-        self.assertEqual(self.run_risk(now="2026-10-19 15:29"), 0)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 15:29"))
+        res = check.check([exit_], cfg(), pf, {}, None, None, utc("2026-11-11 10:16"))
+        res.update(checked_at="2026-11-11T04:46:00Z", check_id="c")
+        rp = os.path.join(self.d, "risk.json")
+        with open(rp, "w", encoding="utf-8") as fh:
+            json.dump(res, fh)
+        code, out, err = self.run_("approve", "--index", "1", "--reply", "yes", "--orders", self.ords, "--config",
+                                   self.cfgp, "--risk", rp, "--state", self.st)
         self.assertEqual(code, 0, err)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:30"))
-        self.assertIn("APPROVED by you at 2026-10-19T15:29:00-04:00, waiting for the place_stock_order", text)
-        for late, why in (("2026-10-19 15:31", "no new entries after 15:30 New York today (it is 15:31)"),
-                          ("2026-10-19 16:30", "the risk check is 61 minutes old (from 15:29 New York; it holds 15); "
-                                              "run check.py again")):
-            code, text, _ = run(self.args("show", "--index", "1", now=late))
-            self.assertIn("EXPIRED: your yes at 2026-10-19T15:29:00-04:00 no longer holds (%s). "
-                          "Do not place it" % why, text)
-            self.assertNotIn("waiting for the place_stock_order", text)
-        code, _, err = run(self.args("result", "--index", "1", "--status", "failed", "--note", "expired",
-                                     now="2026-10-19 16:30"))
-        self.assertEqual(code, 0, err)
-        self.assertEqual([r["status"] for r in self.state_doc()["orders"]], ["approved", "failed"])
-
-    HELD = ("NOT READY: your yes at %s was on an earlier check. Look at the broker's open orders and "
-            "positions for TSLA, then record ticket.py result --status placed (or failed or denied) if it "
-            "was sent, or ticket.py result --status unsent if it was not")
-
-    def test_a_new_check_holds_an_old_yes_until_unsent(self):
-        # Fable R5(a) + R8: yes 10:20 on the 10:15 check, card left open, a new check at 14:00
-        self.assertEqual(self.run_risk(), 0)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.run_risk(now="2026-10-19 14:00"), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
-        self.assertEqual(code, 1)
-        self.assertNotIn("APPROVED", text)
-        self.assertIn(self.HELD % "2026-10-19T10:20:00-04:00", text)
-        before = self.state_doc()
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:00"))
-        self.assertEqual(code, 1)
-        self.assertIn("was on an earlier check", err)
-        self.assertEqual(self.state_doc(), before)  # refused, nothing written
-        code, text, _ = run(self.args("result", "--index", "1", "--status", "unsent", now="2026-10-19 14:00"))
-        self.assertEqual(code, 0)
-        self.assertIn("Nothing was sent", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
-        self.assertIn("READY: trader-risk PASS, waiting for your yes", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:00"))
-        self.assertEqual(code, 0, err)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:01"))
-        self.assertIn("APPROVED by you at 2026-10-19T14:00:00-04:00, waiting for the place_stock_order", text)
-        recs = self.state_doc()["orders"]
-        self.assertEqual([r["status"] for r in recs], ["approved", "unsent", "approved"])
-        with open(self.risk) as fh:
-            self.assertEqual(recs[2]["risk_check"], json.load(fh)["check_id"])
-        self.assertNotEqual(recs[0]["risk_check"], recs[2]["risk_check"])
-        # the log names an unsent record for what it is
-        code, text, _ = run(["log", "--state", self.state, "--now", "2026-10-19 14:01"])
-        self.assertIn("unsent", text)
-        self.assertIn("(never sent; the yes no longer counts)", text)
-        self.assertIn("0 placed today.", text)
-        # even a re-check in the same minute is a new check: the 14:00 yes is held again
-        self.assertEqual(self.run_risk(now="2026-10-19 14:01"), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:01"))
-        self.assertIn(self.HELD % "2026-10-19T14:00:00-04:00", text)
-
-    def test_an_expired_yes_takes_unsent_then_a_new_check(self):
-        # Fable R5(b) + R8: EXPIRED on the same check, then the steps in order
-        self.assertEqual(self.run_risk(), 0)
-        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
-        self.assertIn("EXPIRED: your yes at 2026-10-19T10:20:00-04:00 no longer holds", text)
-        self.assertIn("Do not place it; record ticket.py result --status unsent (or what really happened), "
-                      "run check.py again, then ask for a new yes", text)
-        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent", now="2026-10-19 10:31"))
-        self.assertEqual(code, 0, err)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
-        self.assertIn("NOT READY: the risk check is 16 minutes old", text)  # unsent alone is no PASS
-        self.assertEqual(self.run_risk(now="2026-10-19 10:31"), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
-        self.assertEqual(code, 0)
-        self.assertIn("READY: trader-risk PASS", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:31"))
-        self.assertEqual(code, 0, err)
-
-    def test_placed_against_a_held_yes_is_done_for_good(self):
-        self.assertEqual(self.run_risk(), 0)
-        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
-        self.assertEqual(self.run_risk(now="2026-10-19 14:00"), 0)
-        code, _, err = run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc",
-                                     now="2026-10-19 14:00"))
-        self.assertEqual(code, 0, err)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:00"))
-        self.assertIn("DONE: placed at 2026-10-19T14:00:00-04:00", text)
-        # the real re-check blocks it as a duplicate (TSLA placed today)
-        self.assertEqual(self.run_risk(now="2026-10-19 14:05"), 1)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:05"))
-        self.assertIn("BLOCKED by trader-risk: duplicate", text)
-        # even a fresh PASS that did not see the log leaves it DONE: placed is terminal
-        with redirect_stdout(io.StringIO()):
-            check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf, "--prices",
-                        self.none, "--state", self.none, "--now", "2026-10-19 14:05", "--out", self.risk])
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 14:05"))
-        self.assertIn("DONE: placed at 2026-10-19T14:00:00-04:00", text)
-        code, _, _ = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 14:05"))
-        self.assertEqual(code, 1)
-
-    def test_unsent_needs_a_yes_before_it(self):
-        self.assertEqual(self.run_risk(), 0)
-        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent"))
-        self.assertEqual(code, 1)
-        self.assertIn("a result can only follow an approval", err)
-        self.assertFalse(os.path.exists(self.state))
-        run(self.args("approve", "--index", "1", "--reply", "yes"))
-        run(self.args("result", "--index", "1", "--status", "unsent"))
-        code, _, err = run(self.args("result", "--index", "1", "--status", "unsent"))
-        self.assertEqual(code, 1)  # not twice: unsent is no yes
-        self.assertIn("a result can only follow an approval", err)
-
-    def test_a_failed_order_stays_done_and_a_yes_needs_a_check_id(self):
-        # a real failed is untouched by R5: the broker may hold it
-        self.assertEqual(self.run_risk(), 0)
-        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:16"))
-        run(self.args("result", "--index", "1", "--status", "failed", "--note", "rejected", now="2026-10-19 10:17"))
-        self.assertEqual(self.run_risk(now="2026-10-19 10:20"), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:20"))
-        self.assertIn("DONE: failed at 2026-10-19T10:17:00-04:00", text)
-        # a risk.json with no check id can show a done order but cannot take a yes
-        self.risk_doc(check_id=None)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:20"))
-        self.assertIn("DONE: failed", text)
-        os.remove(self.state)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:20"))
-        self.assertIn("NOT READY: the risk check is from an older trader-risk with no check id", text)
-        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
-        self.assertFalse(os.path.exists(self.state))  # refused: not READY
-        # a yes from an older trader-broker (no risk_check) on such a check is bound to nothing: held
-        with open(self.risk) as fh:
-            fp = json.load(fh)["results"][0]["fingerprint"]
-        with open(self.state, "w") as fh:
-            json.dump({"orders": [{"at": "2026-10-19T10:20:00-04:00", "date": TODAY, "index": 1, "symbol": "TSLA",
-                                   "fingerprint": fp, "status": "approved"}]}, fh)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:21"))
-        self.assertNotIn("APPROVED", text)
-        self.assertIn(self.HELD % "2026-10-19T10:20:00-04:00", text)
-
-    def test_a_yes_expires_after_15_minutes_too(self):
-        self.assertEqual(self.run_risk(), 0)
-        run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 10:20"))
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 10:31"))
-        self.assertIn("EXPIRED: your yes at 2026-10-19T10:20:00-04:00 no longer holds (the risk check is "
-                      "16 minutes old", text)
-
-    def test_a_cutoff_that_is_not_a_time_fails_closed(self):
-        # Fable R2: "10:00" > "9:30" and "15:31" > "True" are both False as strings
-        self.run_risk()
-        for bad in ("9:30", True, "15:30:00", "soon", 1530):
-            self.risk_doc(entries_until=bad)
-            code, text, _ = run(self.args("show", "--index", "1"))
-            self.assertIn("NOT READY: the risk check's entry cut-off %r is not a time" % (bad,), text)
-        self.risk_doc(entries_until="15:30")
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("READY: trader-risk PASS", text)
-
-    def test_window_off_a_plain_day_entry_still_ends_at_the_close(self):
-        # owner, R4: the window off lifts no_entries_* only; the close still binds a plain day order
-        with open(self.cfg) as fh:
-            c = json.load(fh)
-        c.update(no_entries_before=None, no_entries_after=None)
-        with open(self.cfg, "w") as fh:
-            json.dump(c, fh)
-        self.assertEqual(self.run_risk(now="2026-10-19 15:55"), 0)
-        with open(self.risk) as fh:
-            self.assertEqual(json.load(fh)["results"][0]["entries_until"], "15:59")
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 15:59"))
-        self.assertIn("READY: trader-risk PASS", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:05"))
-        self.assertIn("NOT READY: no new entries after 15:59 New York today (it is 16:05)", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 16:05"))
-        self.assertEqual(code, 1)
-        self.assertFalse(os.path.exists(self.state))
-        # the same order as gtc: no cut-off, only the 15 minutes
-        with open(self.orders) as fh:
-            doc = json.load(fh)
-        doc["orders"][0]["time_in_force"] = "gtc"
-        with open(self.orders, "w") as fh:
-            json.dump(doc, fh)
-        self.assertEqual(self.run_risk(now="2026-10-19 16:05"), 0)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:10"))
-        self.assertIn("READY: trader-risk PASS", text)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 16:21"))
-        self.assertIn("16 minutes old", text)
-
-    def test_blocked_orders_are_never_ready(self):
-        self.assertEqual(self.run_risk(now="2026-10-19 09:40"), 1)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 09:40"))
-        self.assertIn("BLOCKED by trader-risk: window: no new entries before 09:45", text)
-        code, _, _ = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 09:40"))
-        self.assertEqual(code, 1)
-
-    def test_result_needs_an_approval_and_decline_is_logged(self):
-        self.run_risk()
-        code, _, err = run(self.args("result", "--index", "1", "--status", "placed"))
-        self.assertEqual(code, 1)
-        self.assertIn("no yes recorded", err)
-        code, text, _ = run(self.args("decline", "--index", "1", "--reply", "no thanks"))
-        self.assertEqual(code, 0)
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("DONE: declined", text)
-
-    def test_ibkr_tickets_send_the_final_yes_to_ibkr(self):
-        with open(self.cfg) as fh:
-            c = json.load(fh)
-        c["broker"] = "ibkr"
-        with open(self.cfg, "w") as fh:
-            json.dump(c, fh)
-        self.run_risk()
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("Interactive Brokers", text)
-        self.assertIn("after you approve it there", text)
-        self.assertNotIn("place_stock_order", text)
-
-    def test_fill_sell_relieves_the_oldest_lot(self):
-        pf = {"cash": 0, "positions": [{"ticker": "KO", "shares": 3, "lots": [
-            {"id": "KO-1", "date": "2025-01-02", "shares": 2, "cost": 120.0},
-            {"id": "KO-2", "date": "2026-01-02", "shares": 1, "cost": 70.0}]}]}
-        with open(self.pf, "w") as fh:
-            json.dump(pf, fh)
-        code, text, _ = run(["fill", "--symbol", "KO", "--side", "sell", "--qty", "2.5", "--price", "90",
-                             "--date", TODAY, "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
-        self.assertEqual(code, 0)
-        with open(self.pf) as fh:
-            pf = json.load(fh)
-        self.assertEqual(pf["cash"], 225.0)
-        lots = pf["positions"][0]["lots"]
-        self.assertEqual([l["id"] for l in lots], ["KO-2"])
-        self.assertEqual(lots[0]["shares"], 0.5)
-        self.assertEqual(lots[0]["cost"], 35.0)
-        self.assertEqual(self.state_doc()["orders"][-1]["status"], "filled")
-        code, _, err = run(["fill", "--symbol", "KO", "--side", "sell", "--qty", "5", "--price", "90",
-                            "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
-        self.assertEqual(code, 1)
-        self.assertNotIn("Traceback", err)
+        self.assertIn("First cancel the stop, so it cannot fire after this sell and open a short: cancel_order with "
+                      "variety regular, order_id S9. Then:", out)
+        self.assertNotIn("The 3 pm close is not active", out)            # an exit, not an entry
 
 
 if __name__ == "__main__":

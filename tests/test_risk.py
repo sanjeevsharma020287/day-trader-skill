@@ -157,6 +157,15 @@ class Format(unittest.TestCase):
         self.block("'M&M.NS' is not an NSE equity symbol", tradingsymbol="M&M.NS")
         self.block("transaction_type must be BUY or SELL", transaction_type="HOLD")
 
+    def test_numbers_sent_as_text_are_blocked(self):
+        # P5, read from source: kite-mcp-server reads a text quantity as 1 share (SafeAssertInt's fallback).
+        for over, words in (({"quantity": "32"}, "quantity must be a JSON number, not text"),
+                            ({"price": "3427.0"}, "price must be a JSON number, not text")):
+            self.block(words, **over)
+        e, s = pair()
+        r = go([e, dict(s, trigger_price="3384.4")])["results"][1]
+        self.assertTrue(any("trigger_price must be a JSON number, not text" in x for x in r["reasons"]), r["reasons"])
+
     def test_the_stop_leg_shape(self):
         e, s = pair()
         res = go([e, dict(s, price=3390.0)])
@@ -226,7 +235,9 @@ class Prices(unittest.TestCase):
     def test_a_price_above_the_limit_warns(self):
         e = go(p=prices(3440.0))["results"][0]
         self.assertEqual(e["verdict"], "PASS")
-        self.assertTrue(any("above your limit %s3,427.00: the order may not fill" % R in w for w in e["warnings"]))
+        self.assertIn("the last price %s3,440.00 is above your limit %s3,427.00: the order may not fill. An unfilled "
+                      "entry must be cancelled by 3:00 PM (the 3 pm close does it only once the owner records its "
+                      "gate)" % (R, R), e["warnings"])
 
 
 class Limits(unittest.TestCase):
@@ -342,7 +353,8 @@ class OldConfigs(unittest.TestCase):
 
 
 class Exits(unittest.TestCase):
-    HELD = {"cash": 100000, "positions": [{"tradingsymbol": "M&M", "quantity": 32, "average_price": 3427.0}]}
+    HELD = {"cash": 100000, "positions": [{"tradingsymbol": "M&M", "quantity": 32, "average_price": 3427.0,
+                                           "product": "MIS", "date": TODAY}]}
 
     def sell(self, **over):
         o = {"variety": "regular", "exchange": "NSE", "tradingsymbol": "M&M", "transaction_type": "SELL",
@@ -371,6 +383,22 @@ class Exits(unittest.TestCase):
         r = go([self.sell(quantity=40)], portfolio=self.HELD, p={})["results"][0]
         self.assertEqual(r["kind"], "entry")
         self.assertTrue(any(x.startswith("short: selling 40 M&M with 32 held") for x in r["reasons"]))
+
+    def test_only_todays_mis_position_is_held_for_a_sell(self):
+        # R35: a CNC holding, yesterday's MIS position or one with no product never makes an MIS sell an exit.
+        pos = self.HELD["positions"][0]
+        for over, label in (({"product": "CNC"}, "product CNC, from 2026-11-11"),
+                            ({"date": "2026-11-10"}, "product MIS, from 2026-11-10"),
+                            ({"product": None}, "product not recorded, from 2026-11-11"),
+                            ({"date": None}, "product MIS, from an unrecorded day")):
+            pf = {"cash": 100000, "positions": [dict(pos, **over)]}
+            res = go([self.sell()], portfolio=pf, p={})
+            r = res["results"][0]
+            self.assertEqual((r["kind"], r["verdict"]), ("entry", "BLOCK"), over)
+            self.assertTrue(any(x.startswith("short: selling 32 M&M with 0 held") for x in r["reasons"]), over)
+            self.assertIn("M&M: 32 shares (%s) are not held for an intraday sell; only today's MIS positions are"
+                          % label, res["warnings"])
+        self.assertEqual(go([self.sell()], portfolio=self.HELD, p={})["results"][0]["kind"], "exit")
 
 
 class Cli(unittest.TestCase):

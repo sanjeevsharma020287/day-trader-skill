@@ -42,7 +42,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-11-11 10:16"  # pin the clock
 | --- | --- |
 | `trader/orders.json` | the proposed Kite orders (trader-budget writes an entry and its stop as a pair) |
 | `trader/config.json` | the limits (trader-budget ships `config.example.json`) |
-| `trader/portfolio.json` | cash and holdings; if missing, a fresh account funded with the budget |
+| `trader/portfolio.json` | cash and positions (trader-broker `fill` writes today's MIS positions); if missing, a fresh account funded with the budget |
 | `trader/prices.json` | each stock's last price with its source and time; also values holdings |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
@@ -77,9 +77,9 @@ Every order:
 | check | blocks |
 | --- | --- |
 | config | a key from the old US pack (`*_usd`, `paper`, `pdt_guard`, `sec_user_agent`, `fractional`, `extended_hours`), a broker other than zerodha, `allow_short` or `allow_options` true, a looser or switched-off window or flat_by, a limit that is not a plain number (`"2,000"`; null and 0 mean no limit) |
-| format | variety other than regular (AMO, cover, iceberg, auction), exchange other than NSE, product other than MIS, MARKET or SL-M, validity other than DAY, a quantity that is not a whole number above 0, a price or trigger off the stock's tick, an SL with no trigger or a limit above it, disclosed quantity or TTL, the tag missing |
+| format | variety other than regular (AMO, cover, iceberg, auction), exchange other than NSE, product other than MIS, MARKET or SL-M, validity other than DAY, a quantity that is not a whole number above 0, a quantity, price or trigger written as text (the kite MCP server reads a text quantity as 1 share), a price or trigger off the stock's tick, an SL with no trigger or a limit above it, disclosed quantity or TTL, the tag missing |
 | asset | a symbol that is not an NSE equity symbol |
-| short | a SELL of more than you hold (an MIS sell with no position is a short sale); a stop leg whose entry was blocked says so |
+| short | a SELL of more than you hold (an MIS sell with no position is a short sale); only today's MIS positions in `portfolio.json` count as held (a CNC holding, an older position or one with no product does not: that sell would be an intraday short); a stop leg whose entry was blocked says so |
 
 Every entry, on top:
 

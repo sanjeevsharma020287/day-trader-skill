@@ -509,6 +509,47 @@ B0 waits on the owner.
   trading by default" is replaced by the dry-run Safety block in B2 (scanner,
   entry, exit, alerts, time machine, budget, risk); trader-broker's SKILL.md
   follows in B3.
+* **Carried from the B2 review (Fable, 2026-11-12, on `f236fca`):** R30 to
+  R34 are fixed in `ab0a107` and ride in the B3 packet as their own part:
+  R30 (analyst: an outcome row is never dropped by the "to consider" text
+  test), R31 (risk: an entry is BLOCKed unless its stop leg is a valid SL
+  SELL of the same symbol), R32 (risk and budget: a last price at or under
+  the stop's trigger is no entry), R33 (risk: a stopless buy counts its whole
+  value as its max loss), R34 (risk and budget: a limit that is not a plain
+  number is refused by name). R35 (only MIS day positions count as held for
+  a sell) and R36 (ticket.py judges the window on the real clock and refuses
+  a check from another day or minute) are B3's.
+* **P5 desk check, read from source, not B0-proven** (2026-11-12; [S22]
+  `zerodha/kite-mcp-server` at commit `5e044dc` of 2026-07-10, `mcp/post_tools.go`
+  and `mcp/common.go`; [S23] `gokiteconnect` v4.3.5 `orders.go`, the version
+  in its `go.mod`):
+  * **`place_order` takes `tag`** (`MaxLength(20)`, described as
+    "alphanumeric, max 20 chars"), so R12 is **not** settled as order_id only:
+    the pack sends `traderpack`. Whether `get_orders` returns it and which
+    characters Kite accepts stay B0's.
+  * **`validity` is DAY, IOC or TTL, with `validity_ttl` in minutes** on
+    `place_order`; `modify_order` has `validity` but no `validity_ttl` and no
+    `tag`. The entry TTL [R1] stays B0's.
+  * **No `market_protection` on `place_order` or `modify_order`**, which
+    confirms F5: LIMIT and SL only.
+  * **Quantity falls back to 1.** `place_order` declares `DefaultString("1")`
+    and both handlers read `SafeAssertInt(args["quantity"], 1)`: a missing
+    quantity, or one sent as text ("32"), becomes **1 share**. `OrderParams`
+    has `quantity,omitempty`, but 1 is not empty, so `modify_order` without a
+    quantity **sends quantity 1** and would shrink a resting order. A JSON
+    number is truncated (`int(f)`). Price and trigger sent as text become 0
+    and are left out. **Consequence:** risk BLOCKs a quantity, price or
+    trigger that is text; ticket.py sends every number as a JSON number and
+    never writes a `modify_order` input without `quantity`, `price`,
+    `order_type` and `validity`.
+  * **Errors are opaque.** A refusal returns only "Failed to place order" (or
+    modify, cancel); Kite's reason goes to the server's log. ticket.py never
+    retries on a failure: it tells the user to read `get_orders` (its
+    `status_message`), because a timeout may still have placed the order.
+  * **No tool annotations** (`mcp/mcp.go`: "TODO: add destructive, openworld
+    and readonly hints"). The client sees nothing that marks `place_order` as
+    destructive, so its per-tool "Needs approval" setting and the guard hook
+    (B4, matched by tool name) are the only gates.
 * B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].
@@ -590,3 +631,5 @@ one-off `curl` reads of public endpoints on 2026-11-12.
 - [S19] Zerodha GTT and bracket/cover replies (staff replies on the forum and Trading Q&A; not formal policy): https://zerodha.com/z-connect/kite/introducing-gtt-good-till-triggered-orders , https://kite.trade/forum/discussion/11185/gtt-orders
 - [S20] Claude Code, "Schedule recurring tasks in Claude Code Desktop": https://code.claude.com/docs/en/desktop-scheduled-tasks
 - [S21] Claude Code, Hooks reference (PreToolUse, exit code 2, timeouts): https://code.claude.com/docs/en/hooks
+- [S22] kite-mcp-server source at commit 5e044dc (2026-07-10), read 2026-11-12: https://github.com/zerodha/kite-mcp-server/blob/5e044dc11c0846794af1a3f1e74bf50701cf44e3/mcp/post_tools.go , .../mcp/common.go , .../mcp/mcp.go
+- [S23] gokiteconnect v4.3.5 `orders.go` (OrderParams, ModifyOrder): https://github.com/zerodha/gokiteconnect/blob/v4.3.5/orders.go

@@ -85,10 +85,8 @@ class Repo(unittest.TestCase):
             self.assertIn("yes", low, s)
 
     def test_order_path_skills_say_dry_run_not_paper(self):
-        # R29: the US pack's "paper trading" is gone; trader-broker's SKILL.md is rewritten in B3.
+        # R29: the US pack's "paper trading" is gone, trader-broker included (B3).
         for s in ORDER_PATH:
-            if s == "trader-broker":
-                continue
             _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
             self.assertIn('Dry run by default (`"dry_run": true`)', text, s)
             self.assertNotIn("paper trading", text.lower(), s)
