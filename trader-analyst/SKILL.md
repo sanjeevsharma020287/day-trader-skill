@@ -64,7 +64,13 @@ python3 "${CLAUDE_SKILL_DIR}/facts.py" "M&M" HDFCBANK --metrics trader/metrics.j
   and read it, and say which numbers came from where.
 - **Behind the filings, said first.** When NSE has a results filing for a
   later quarter than Yahoo's newest, the report opens with a NOTE: the table
-  does not include it, read the filing.
+  does not include it, read the filing. When NSE cannot be read, the NOTE
+  says so instead: the report cannot tell whether a newer result is filed
+  (`behind_filings` is null in the metrics file, and the error is in it).
+  A board-meeting intimation ("to consider the financial results") is not a
+  results filing. A results filing whose quarter the tool cannot read is
+  counted in a NOTE, and the filing it links is then "the newest this tool
+  could read", not the newest.
 - **Compare like with like, by date.** Year on year uses the quarter that
   ended in the same month a year earlier. If that quarter is missing, there
   is no growth figure: a gap prints as a gap, never as a neighbour's number.
@@ -72,7 +78,8 @@ python3 "${CLAUDE_SKILL_DIR}/facts.py" "M&M" HDFCBANK --metrics trader/metrics.j
 - **Missing stays missing.** A bank has no gross profit or operating income
   at Yahoo: those margins print as "-", never as zero. The basis
   (consolidated or standalone) is "not stated by the source". Numbers in any
-  currency other than INR are refused.
+  currency other than INR are refused; a number with no currency on it stays
+  missing.
 - **No numbers is still an answer.** If Yahoo has nothing (or answers in a
   shape the tool does not know), it says there is no table and links the
   filing.

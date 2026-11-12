@@ -22,7 +22,9 @@
         "link": "https://nsearchives.nseindia.com/corporate/HDFCBANK_17102026135520_OutcomeofBMResults_17oct2026.pdf",
         "filed": "2026-10-17T13:56:22"
       },
-      "behind_filings": true
+      "behind_filings": true,
+      "unread_filings": 0,
+      "error": null
     },
     {
       "symbol": "M&M",
@@ -47,7 +49,9 @@
         "link": "https://nsearchives.nseindia.com/corporate/Pooja_05112026125638_Outcome5Nov.pdf",
         "filed": "2026-11-05T12:57:20"
       },
-      "behind_filings": false
+      "behind_filings": false,
+      "unread_filings": 0,
+      "error": null
     }
   ]
 }

@@ -662,11 +662,20 @@ def usable(bars, day, cutoff, n_range):
     return all(b["start"] == slot(day, k) for k, b in enumerate(bars))
 
 
+def counts_from(bars, n_range):
+    """Index of the first bar that may trigger: after the range, and closing at 9:30 or later (R27: a
+    5- or 10-minute range ends before 9:30, and a bar closing before 9:30 is not an entry)."""
+    k = n_range
+    while k < len(bars) and (bars[k]["start"] + datetime.timedelta(minutes=BAR_MIN)).time() < ENTRIES_FROM:
+        k += 1
+    return k
+
+
 def orb_candidate(bars, n_range):
-    """Stage 1, closes only: some completed bar after the range closed at or above
+    """Stage 1, closes only: some completed bar that may trigger closed at or above
     the highest close of the range. Necessary for a breakout (range high >= any range close)."""
     top = max(b["c"] for b in bars[:n_range])
-    return any(b["c"] >= top for b in bars[n_range:])
+    return any(b["c"] >= top for b in bars[counts_from(bars, n_range):])
 
 
 def orb_hit(bars, n_range):
@@ -676,7 +685,7 @@ def orb_hit(bars, n_range):
         return None
     oh = max(b["h"] for b in rng)
     ol = min(b["l"] for b in rng)
-    for k in range(n_range, len(bars)):
+    for k in range(counts_from(bars, n_range), len(bars)):
         b = bars[k]
         if b["c"] > oh:
             closes_at = b["start"] + datetime.timedelta(minutes=BAR_MIN)
@@ -699,7 +708,7 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
                         "after the opening range, or replay a past day with --offline." % (day_label(day), why))
     s = session(day)
     range_end = slot(day, or_minutes // BAR_MIN)
-    first_close = range_end + datetime.timedelta(minutes=BAR_MIN)
+    first_close = max(range_end + datetime.timedelta(minutes=BAR_MIN), datetime.datetime.combine(day, ENTRIES_FROM))
     close_dt = datetime.datetime.combine(day, s[1])
     if at is not None:
         cutoff = datetime.datetime.combine(day, at)
@@ -714,8 +723,8 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
             raise ScanError("The market closed at %s IST on %s. Replay the session with --at 10:15."
                             % (clock_label(close_dt), day_label(day)))
     if cutoff < first_close:
-        raise ScanError("It is %s IST: the %d-minute opening range runs 9:15 to %s and the first bar after it "
-                        "closes at %s. Run orb again after %s."
+        raise ScanError("It is %s IST: the %d-minute opening range runs 9:15 to %s and the first bar that can "
+                        "count closes at %s. Run orb again after %s."
                         % (clock_label(cutoff), or_minutes, clock_label(range_end), clock_label(first_close),
                            clock_label(first_close)))
     late = cutoff.time() >= ENTRIES_UNTIL or (until is not None and cutoff.time() > until)

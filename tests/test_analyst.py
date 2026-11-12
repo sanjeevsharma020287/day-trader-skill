@@ -84,6 +84,18 @@ class Numbers(unittest.TestCase):
         self.assertIsNone(ttm)
         self.assertNotIn("eps_diluted", rows[1]["fields"])            # Mar 2025 EPS not given
 
+    def test_a_value_with_no_currency_stays_missing(self):
+        # R25: the currency comes from the response; a value without one is not taken for rupees.
+        doc = json.loads(raw("yts-M&M.json").decode("utf-8"))
+        for r in doc["timeseries"]["result"]:
+            if r["meta"]["type"][0] == "quarterlyTotalRevenue":
+                for v in r["quarterlyTotalRevenue"]:
+                    if v and v["asOfDate"] == "2026-09-30":
+                        del v["currencyCode"]
+        q = facts.parse_yts(json.dumps(doc).encode("utf-8"))
+        self.assertNotIn("revenue", q[D(2026, 9, 30)])
+        self.assertIn("net_income", q[D(2026, 9, 30)])
+
     def test_a_currency_other_than_inr_is_refused(self):
         doc = json.loads(raw("yts-M&M.json"))
         for r in doc["timeseries"]["result"]:
@@ -130,6 +142,27 @@ class Filings(unittest.TestCase):
                  "attchmntText": "Unaudited financial results for the quarter ended 30 June 2026"}]
         f = facts.parse_filings(json.dumps(rows).encode("utf-8"))
         self.assertEqual([x["link"] for x in f], ["r.pdf"])
+
+    def test_ended_in_any_case_and_intimations_are_not_results(self):
+        # SYNTHETIC rows (R24): "Quarter Ended" in capitals counts; a notice that the board will consider
+        # results is not a results filing; a results row whose quarter cannot be read is counted, not dropped.
+        rows = [{"desc": "Board Meeting Intimation", "an_dt": "12-Nov-2026 10:00:00", "attchmntFile": "i.pdf",
+                 "attchmntText": "Board meeting on 20 January 2027 on the financial results for the quarter "
+                                 "ended 31 December 2026"},
+                {"desc": "General Updates", "an_dt": "12-Nov-2026 10:30:00", "attchmntFile": "k.pdf",
+                 "attchmntText": "The board will meet to consider the financial results for the quarter ended "
+                                 "31 December 2026"},
+                {"desc": "General Updates", "an_dt": "12-Nov-2026 11:00:00", "attchmntFile": "j.pdf",
+                 "attchmntText": "A board meeting is to be held to approve the financial results for the quarter "
+                                 "ended 31 December 2026"},
+                {"desc": "Financial Result Updates", "an_dt": "05-Nov-2026 15:00:00", "attchmntFile": "q.pdf",
+                 "attchmntText": "Financial Results for the Quarter Ended September 30, 2026"},
+                {"desc": "Outcome of Board Meeting", "an_dt": "06-Nov-2026 15:00:00", "attchmntFile": "u.pdf",
+                 "attchmntText": "Audited financial results for the period ended the thirtieth of September"}]
+        f, unread = facts.read_filings(json.dumps(rows).encode("utf-8"))
+        self.assertEqual([x["link"] for x in f], ["q.pdf"])
+        self.assertEqual(f[0]["period_end"], D(2026, 9, 30))
+        self.assertEqual(unread, 1)
 
     def test_a_refusal_is_a_plain_error(self):
         with self.assertRaises(facts.FactsError):
@@ -181,6 +214,44 @@ class Cli(unittest.TestCase):
         code, text, _ = run(["M&M", "--offline", empty, "--now", NOW])
         self.assertEqual(code, 0)
         self.assertIn("No table: Yahoo's answer is not the shape this tool knows", text)
+
+    def off(self, ann=None, yts=None):
+        """An offline folder with M&M's real Yahoo numbers and the given NSE answer (bytes) or the real one."""
+        d = os.path.join(self.d, "off")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "yts-M&M.json"), "wb") as fh:
+            fh.write(yts if yts is not None else raw("yts-M&M.json"))
+        with open(os.path.join(d, "ann-M&M.json"), "wb") as fh:
+            fh.write(ann if ann is not None else raw("ann-M&M.json"))
+        return d
+
+    def test_nse_unreadable_with_numbers_says_so(self):
+        # R23: Yahoo answers, NSE refuses: R19's check did not run, so nothing may claim there is no newer filing.
+        d = self.off(b"<html>Access Denied</html>")
+        path = os.path.join(self.d, "metrics.json")
+        code, text, _ = run(["M&M", "--offline", d, "--now", NOW, "--metrics", path])
+        self.assertEqual(code, 0)
+        lines = text.splitlines()
+        self.assertTrue(lines[1].startswith("NOTE: NSE's announcements could not be read ("), lines[1])
+        self.assertIn("cannot tell whether a newer result is filed", lines[1])
+        self.assertNotIn("No results filing found", text)
+        self.assertIn("2026-09-30     %s57,515 cr" % R, text)
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)["companies"][0]
+        self.assertIsNone(row["behind_filings"])
+        self.assertIn("NSE filings:", row["error"])
+
+    def test_an_unreadable_results_filing_is_said(self):
+        # R24(c): the readable filing is not called the newest when another results row could not be read.
+        rows = json.loads(raw("ann-M&M.json").decode("utf-8"))
+        rows = rows.get("data", rows) if isinstance(rows, dict) else rows
+        rows.insert(0, {"desc": "Outcome of Board Meeting", "an_dt": "11-Nov-2026 16:00:00", "attchmntFile": "x.pdf",
+                        "attchmntText": "Financial results for the quarter ended last month"})
+        code, text, _ = run(["M&M", "--offline", self.off(json.dumps(rows).encode("utf-8")), "--now", NOW])
+        self.assertEqual(code, 0)
+        self.assertIn("NOTE: 1 results filing on NSE names a quarter this tool could not read", text)
+        self.assertIn("Newest results filing this tool could read: quarter ended 2026-09-30", text)
+        self.assertNotIn("Newest results filing on NSE", text)
 
     def test_metrics_file(self):
         path = os.path.join(self.d, "metrics.json")

@@ -323,6 +323,23 @@ class Orb(unittest.TestCase):
         self.assertEqual((hdfc["at"], hdfc["price"], hdfc["or_high"], hdfc["pct_over"]), ("9:40 AM", 814.1, 813.7,
                                                                                           0.05))
 
+    def test_a_short_range_never_counts_a_bar_closing_before_930(self):
+        # R27, SYNTHETIC: a 5-minute range (9:15 bar); the 9:20 bar closes above it at 9:25, before entries open.
+        day, cut = D(2026, 11, 11), DT(2026, 11, 11, 9, 50)
+        early = bars_series("2026-11-11", [100.0, 101.0, 99.0, 99.0, 99.0, 99.0, 99.0])
+        bars = scan.session_bars(early, day, cut)
+        self.assertFalse(scan.orb_candidate(bars, 1))
+        self.assertIsNone(scan.orb_hit(bars, 1))
+        later = bars_series("2026-11-11", [100.0, 101.0, 100.05, 100.5, 99.0, 99.0, 99.0])
+        bars = scan.session_bars(later, day, cut)
+        self.assertTrue(scan.orb_candidate(bars, 1))
+        self.assertEqual(scan.orb_hit(bars, 1)["at"], "9:35 AM")       # the 9:30 bar, not the 9:20 one
+        hits, _, _ = scan.scan_orb({"AAA": early, "BBB": later}, ["AAA", "BBB"], day, cut, 5)
+        self.assertEqual([(h["symbol"], h["at"]) for h in hits], [("BBB", "9:35 AM")])
+        with self.assertRaises(scan.ScanError) as e:
+            scan.orb_window(scan.parse_now("2026-11-11 09:27"), None, 5, datetime.time(15, 0))
+        self.assertIn("the first bar that can count closes at 9:30 AM. Run orb again after 9:30 AM", str(e.exception))
+
     def test_price_floor(self):
         hits, counts, _ = self.scan_at("2026-11-11 10:15", min_price=50)
         self.assertEqual(len(hits), 97)                   # SUZLON, SAGILITY, YESBANK, IDEA under Rs 50

@@ -124,13 +124,31 @@ class TheReel(unittest.TestCase):
         self.assertEqual((r["status"], r["phase"]), ("waiting", "open"))
         self.assertEqual(r["opening_range"]["bars"], 3)
 
-    def test_after_the_close_it_stays_triggered_and_says_it_is_late(self):
+    def test_after_the_close_it_stays_triggered_and_says_the_window_is_shut(self):
         r = at("2026-11-11 15:35")
-        self.assertEqual((r["status"], r["phase"]), ("triggered", "after-close"))
+        self.assertEqual((r["status"], r["phase"], r["entries_over"]), ("triggered", "after-close", True))
         self.assertEqual(r["trigger"]["time"], "10:15 AM")
         text = "\n".join(entry.describe(r))
-        self.assertIn("minutes ago", text)
+        self.assertIn("The entry window is shut (no new entries from 15:00 India time): no entry on this setup "
+                      "today.", text)
         self.assertNotIn("This is the moment", text)
+        r = at("2026-11-11 14:59")                                # still inside the window: a late entry
+        self.assertFalse(r["entries_over"])
+        self.assertIn("minutes ago", "\n".join(entry.describe(r)))
+
+    def test_a_trigger_just_before_the_cutoff_read_after_it(self):
+        # R26, 5-minute bars: the 14:50 bar (closes 14:55) breaks out; it is read at 15:05.
+        d = no_breakout()
+        q = d["chart"]["result"][0]["indicators"]["quote"][0]
+        q["close"][67], q["high"][67] = 3430.0, 3431.0
+        r = at("2026-11-11 15:05", d)
+        self.assertEqual((r["status"], r["phase"], r["entries_over"]), ("triggered", "after-cutoff", True))
+        self.assertEqual(r["trigger"]["time"], "2:55 PM")
+        text = "\n".join(entry.describe(r))
+        self.assertIn("The entry window is shut", text)
+        self.assertNotIn("the moment to get in", text)
+        self.assertNotIn("Next: set the stop", text)
+        self.assertIs(entry.entry_doc(r, ist("2026-11-11 15:05"))["entries_over"], True)
 
     def test_the_null_auction_bar_is_dropped(self):
         c = chart()
@@ -293,6 +311,38 @@ class OneMinute(unittest.TestCase):
         self.assertNotIn(19, slots)                               # 9:34 came as nulls
         self.assertEqual(slots[-1], 35)                           # 9:51 still forming, the 9:51:30 tick dropped
         self.assertEqual(r["forming"]["bar_start"], "09:51")
+
+    def test_the_1458_bar_read_at_150030_is_not_the_moment(self):
+        # R26, 1-minute bars: SYNTHETIC session, flat under the range until the 14:58 bar breaks out.
+        d = copy.deepcopy(doc(DEMO))
+        r0 = d["chart"]["result"][0]
+        q = r0["indicators"]["quote"][0]
+        ts = r0["timestamp"][:15]
+        for k in ("open", "high", "low", "close", "volume"):
+            q[k] = q[k][:15]
+        for slot in range(15, 345):                            # 9:30 to 14:59
+            ts.append(OPEN_TS + slot * 60)
+            up = slot == 343                                   # the 14:58 bar
+            for k, v in (("open", 100.0), ("high", 101.1 if up else 100.4), ("low", 99.8),
+                         ("close", 101.0 if up else 100.0), ("volume", 9000)):
+                q[k].append(v)
+        r0["timestamp"] = ts
+        r0["meta"]["regularMarketTime"] = OPEN_TS + 345 * 60 + 25
+        c = entry.parse_chart(json.dumps(d), "DEMO")
+        r = entry.evaluate(c, ist("2026-11-11 15:00:30"), interval="1m")
+        self.assertEqual((r["status"], r["entries_over"], r["minutes_since"]), ("triggered", True, 1))
+        self.assertEqual(r["trigger"]["bar_start"], "14:58")
+        text = "\n".join(entry.describe(r))
+        self.assertNotIn("the moment to get in", text)
+        self.assertIn("no entry on this setup today", text)
+        trig = [b for b in r["_bars"] if b["slot"] == 343][0]
+        line = entry.bar_line(trig, r)
+        self.assertIn("the entry window is shut: no entry today", line)
+        self.assertNotIn("Get in now", line)
+        r = entry.evaluate(c, ist("2026-11-11 14:59:30"), interval="1m")   # inside the window it is the moment
+        self.assertFalse(r["entries_over"])
+        self.assertIn("the moment to get in", "\n".join(entry.describe(r)))
+        self.assertIn("Get in now", entry.bar_line(trig, r))
 
     def test_the_file_and_the_interval_must_agree(self):
         code, _, err = run(["check", "DEMO", "--offline", DEMO])

@@ -94,8 +94,10 @@ day bar by bar without waiting.
    laptop pauses it, and it catches up, late, when it wakes.
 4. When it triggers, say the time and the price, and that nothing was placed.
    If the trigger is more than a bar old, say that too: a late entry is a
-   different trade.
-5. Hand off to `/trader-exit` to set the stop and the target BEFORE anything
+   different trade. Read at or after 3:00 PM (or your earlier end), a
+   trigger is history: the window is shut and there is no entry today
+   (`entries_over` is true in `trader/entry.json`). Do not hand it on.
+5. Otherwise hand off to `/trader-exit` to set the stop and the target BEFORE anything
    is bought.
 
 ## Example: the reel

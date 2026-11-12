@@ -562,7 +562,9 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
 
     if trig:
         vx = (trig["v"] / avg_vol) if avg_vol else None
-        res.update(status="triggered", phase="open" if local < close_dt else "after-close",
+        over = local >= cutoff             # R26: the trigger is history once the entry window has shut
+        res.update(status="triggered", phase="after-close" if local >= close_dt else ("after-cutoff" if over else "open"),
+                   entries_over=over,
                    reason="the %s bar closed above %s" % (short(trig["et"]), "the range high" if setup == "orb" else "the level"))
         res["trigger"] = {"time": ampm(trig["end"]), "close_time": hm(trig["end"]), "bar_start": hm(trig["et"]),
                           "bar_index": trig["slot"], "price": r2(trig["c"]), "close": trig["c"],
@@ -611,6 +613,7 @@ def entry_doc(res, now_utc):
             "bar_index": t.get("bar_index"), "price": t.get("price"), "level": res.get("level"),
             "interval": res["interval"],
             "opening_range": {"high": orr["high"], "low": orr["low"], "minutes": orr["minutes"]} if orr else None,
+            "entries_over": bool(res.get("entries_over")),
             "source": "yahoo", "checked_at": iso(now_utc), "reason": res.get("reason")}
 
 
@@ -660,6 +663,13 @@ def describe(res):
             "the range high" if res["setup"] == "orb" else "the level", inr(res["level"]), t["pct_over"],
             (", %.2fx the range's volume" % t["volume_x"]) if res.get("min_volume_x") and t.get("volume_x") else ""))
         step = INTERVALS[res["interval"]] // 60
+        if res.get("entries_over"):
+            out.append("The entry window is shut (no new entries from %s India time): no entry on this setup "
+                       "today. Nothing was placed." % res["no_entries_after"])
+            if not res.get("calendar_known"):
+                out.append("The NSE holiday list in this pack covers %s only: no entries on other years until "
+                           "NSE's circular is added." % " and ".join(map(str, NSE_CALENDAR_YEARS)))
+            return out
         if res.get("minutes_since", 0) > step and res.get("last"):
             out.append("That was %d minutes ago; the last close is %s (%s bar). A late entry is a different "
                        "trade: the price, the stop distance and the odds have moved." % (
@@ -702,6 +712,9 @@ def bar_line(b, res):
         note = "range so far %s to %s" % (inr(min(x["l"] for x in seen)), inr(max(x["h"] for x in seen)))
         if b["slot"] == n_or - 1:
             note = "opening range set: high %s, low %s" % (inr(orr["high"]), inr(orr["low"]))
+    elif t and t["bar_index"] == b["slot"] and res.get("entries_over"):
+        note = "TRIGGERED: closed above %s (%+.2f%%) at %s, but the entry window is shut: no entry today" % (
+            inr(lvl), t["pct_over"], t["time"])
     elif t and t["bar_index"] == b["slot"]:
         note = "TRIGGERED: closed above %s (%+.2f%%). Get in now if you take it: %s, %s" % (
             inr(lvl), t["pct_over"], t["time"], inr(t["price"]))

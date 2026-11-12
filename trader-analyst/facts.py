@@ -201,8 +201,10 @@ def parse_yts(data):
             if not v:
                 continue
             cur = v.get("currencyCode")
-            if cur and cur != "INR":
-                raise FactsError("Yahoo reports %s in %s, not INR: refused" % (typ, cur))
+            if cur != "INR":
+                if cur:
+                    raise FactsError("Yahoo reports %s in %s, not INR: refused" % (typ, cur))
+                continue                   # no currency on it: the value stays missing (R21, R25)
             if v.get("periodType") not in (None, "3M"):
                 continue
             d = parse_iso_date(v.get("asOfDate"))
@@ -215,29 +217,38 @@ def parse_yts(data):
 
 def parse_filings(data):
     """NSE announcements -> results filings [{period_end, filed, link, text, desc}], newest period first."""
+    return read_filings(data)[0]
+
+
+def read_filings(data):
+    """-> (results filings newest period first, how many results rows had a quarter this tool could not read).
+    A board-meeting intimation ("to consider the financial results ...") is not a results filing."""
     try:
         doc = json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
     except ValueError:
         raise FactsError("NSE announcements are not JSON (NSE may have refused the request)")
     if isinstance(doc, dict):
         doc = doc.get("data") or []
-    out = []
+    out, unread = [], 0
     for a in doc if isinstance(doc, list) else []:
         if not isinstance(a, dict):
             continue
         text = " ".join((a.get("attchmntText") or "").split())
         if not re.search(r"financial results", text, re.I):
             continue
-        m = re.search(r"\bended\s+(?:on\s+)?(.+?)(?:[\".]|$)", text)
+        desc = (a.get("desc") or "").strip()
+        if re.search(r"intimation", desc, re.I) or re.search(r"\bto consider\b|\bto be held\b", text, re.I):
+            continue                       # the board will consider results: none are filed yet
+        m = re.search(r"\bended\s+(?:on\s+)?(.+?)(?:[\".]|$)", text, re.I)
         end = parse_text_date(m.group(1)) if m else None
         if end is None:
+            unread += 1
             continue
-        desc = (a.get("desc") or "").strip()
         out.append({"period_end": end, "filed": nse_time(a.get("an_dt")), "link": a.get("attchmntFile") or "",
                     "text": text, "desc": desc})
     rank = lambda f: 0 if re.search(r"outcome of board meeting|financial result", f["desc"], re.I) else 1
     out.sort(key=lambda f: (-f["period_end"].toordinal(), rank(f), -(f["filed"] or _dt.datetime.min).toordinal()))
-    return out
+    return out, unread
 
 
 # ---------------------------------------------------------------- the numbers
@@ -309,9 +320,17 @@ def _g(v):
     return "-" if v is None else "%+.1f%%" % v
 
 
-def report(symbol, rows, gaps, ttm, filing, error=None):
+def report(symbol, rows, gaps, ttm, filing, error=None, nse_error=None, unread=0):
     out = ["%s: quarterly results" % symbol]
     newest = rows[0]["period_end"] if rows else None
+    if nse_error:
+        out.append("NOTE: NSE's announcements could not be read (%s): this report cannot tell whether a newer "
+                   "result is filed." % nse_error)
+    if unread:
+        out.append("NOTE: %d results filing%s on NSE name%s a quarter this tool could not read: the filing below "
+                   "may not be the newest. Check NSE's announcements." % (unread, "" if unread == 1 else "s",
+                                                                          "s" if unread == 1 else ""))
+    which = "Newest results filing on NSE" if not unread else "Newest results filing this tool could read"
     if filing and (newest is None or filing["period_end"].isoformat() > newest):
         out.append("NOTE: NSE has a results filing for the quarter ended %s (filed %s) that the numbers below do "
                    "not include%s. Read the filing: %s"
@@ -319,9 +338,9 @@ def report(symbol, rows, gaps, ttm, filing, error=None):
                       else "date unknown", "" if rows else " (there are no numbers)", filing["link"]))
     if not rows:
         out.append("No table: %s." % (error or "Yahoo returned no quarterly numbers for %s.NS" % symbol))
-        if filing and newest is None and not any("NOTE:" in l for l in out):
-            out.append("Newest results filing: %s" % filing["link"])
-        if not filing:
+        if filing and newest is None and not any("NOTE: NSE has" in l for l in out):
+            out.append("%s: %s" % (which, filing["link"]))
+        if not filing and not nse_error:
             out.append("No results filing found in NSE's announcements of the last %d days." % FILING_DAYS)
         out.append("Numbers only, not a recommendation.")
         return "\n".join(out)
@@ -347,17 +366,17 @@ def report(symbol, rows, gaps, ttm, filing, error=None):
     else:
         out.append("No trailing twelve months: the four newest quarters are not four in a row.")
     if filing:
-        out.append("Newest results filing on NSE: quarter ended %s, filed %s: %s"
-                   % (filing["period_end"].isoformat(),
+        out.append("%s: quarter ended %s, filed %s: %s"
+                   % (which, filing["period_end"].isoformat(),
                       filing["filed"].strftime("%Y-%m-%d %H:%M IST") if filing["filed"] else "date unknown",
                       filing["link"]))
-    else:
+    elif not nse_error:
         out.append("No results filing found in NSE's announcements of the last %d days." % FILING_DAYS)
     out.append("Numbers only, not a recommendation.")
     return "\n".join(out)
 
 
-def metrics_row(symbol, rows, gaps, ttm, filing, fetched):
+def metrics_row(symbol, rows, gaps, ttm, filing, fetched, error=None, nse_error=None, unread=0):
     r0 = rows[0] if rows else {}
     return {"symbol": symbol, "period_end": r0.get("period_end"),
             "revenue_ttm": (ttm or {}).get("revenue"), "net_income_ttm": (ttm or {}).get("net_income"),
@@ -368,30 +387,36 @@ def metrics_row(symbol, rows, gaps, ttm, filing, fetched):
             "gaps": gaps, "basis": BASIS, "source": SOURCE, "fetched_at": fetched,
             "newest_filing": ({"period_end": filing["period_end"].isoformat(), "link": filing["link"],
                                "filed": filing["filed"].isoformat() if filing["filed"] else None} if filing else None),
-            "behind_filings": bool(filing and (not rows or filing["period_end"].isoformat() > r0["period_end"]))}
+            "behind_filings": None if nse_error else
+            bool(filing and (not rows or filing["period_end"].isoformat() > r0["period_end"])),
+            "unread_filings": unread, "error": error}
 
 
 def run_one(fetcher, symbol, now_utc, n):
     """-> (text, json doc, metrics row). Never raises for missing numbers (R22)."""
-    error = None
+    error = nse_error = None
+    unread = 0
     try:
         quarters = parse_yts(fetcher.get(yts_url(symbol, now_utc), "yts-%s.json" % symbol))
     except FactsError as e:
         quarters, error = {}, str(e)
     try:
-        filings = parse_filings(fetcher.get(ann_url(symbol, now_utc), "ann-%s.json" % symbol))
+        filings, unread = read_filings(fetcher.get(ann_url(symbol, now_utc), "ann-%s.json" % symbol))
     except FactsError as e:
-        filings = []
+        filings, nse_error = [], str(e)
         error = (error + "; " if error else "") + "NSE filings: %s" % e
     rows, gaps, ttm = analyse(quarters, n)
     filing = filings[0] if filings else None
     fetched = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    metrics = metrics_row(symbol, rows, gaps, ttm, filing, fetched, error, nse_error, unread)
     doc = {"symbol": symbol, "rows": rows, "gaps": gaps, "ttm": ttm, "basis": BASIS, "source": SOURCE,
-           "fetched_at": fetched, "error": error,
-           "newest_filing": metrics_row(symbol, rows, gaps, ttm, filing, fetched)["newest_filing"]}
+           "fetched_at": fetched, "error": error, "newest_filing": metrics["newest_filing"],
+           "behind_filings": metrics["behind_filings"], "unread_filings": unread}
+    yahoo_error = error.split("; NSE filings:")[0] if error and not error.startswith("NSE filings:") else None
+    text = report(symbol, rows, gaps, ttm, filing, yahoo_error, nse_error, unread)
     for r in doc["rows"]:
         r["period_end"] = str(r["period_end"])
-    return report(symbol, rows, gaps, ttm, filing, error), doc, metrics_row(symbol, rows, gaps, ttm, filing, fetched)
+    return text, doc, metrics
 
 
 def write_metrics(path, rows, now_utc):

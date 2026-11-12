@@ -98,7 +98,10 @@ bar, so the 20 sessions are trading sessions.
 The opening range is the first `--or-minutes` (15) of the session: the 9:15,
 9:20 and 9:25 five-minute bars. A hit is the first completed 5-minute bar to
 CLOSE above the range high, at that bar's close time. The first possible hit
-is the 9:30 bar, at 9:35 AM: no order before 9:30 in any case.
+is the 9:30 bar, at 9:35 AM: no order before 9:30 in any case. With a
+shorter range (`--or-minutes 5`), a bar that closes before 9:30 is never a
+hit; the first that can be closes at 9:30 AM, as in trader-entry and the
+time machine.
 
 1. Stage 1, every symbol: spark closes of today's 5-minute bars, 20 a
    request. A chart goes on only if a completed bar after the range closed at
