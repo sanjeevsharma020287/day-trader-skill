@@ -33,7 +33,8 @@ import ticket  # noqa: E402
 
 dt = ticket.datetime
 FILE_MAX_AGE_S = 300
-FRESH_CLOSE_S = 300             # a close price this fresh gets the narrow band; older or unknown, the wide one
+FRESH_CLOSE_S = 300             # B0-provisional (R15): a close price this fresh gets the narrow band; older or
+                                # unknown age, the wide one (R16a). B0 measures how old Kite's prices are.
 FO_LAST = dt.time(15, 10)       # the no-yes sell for an F&O-list stock stops here, 2 minutes before 15:12 (R8)
 DONE = {"COMPLETE", "CANCELLED", "REJECTED"}
 FEE = "%s + GST an order" % ticket.inr(50, 0)

@@ -245,7 +245,10 @@ python3 "${CLAUDE_SKILL_DIR}/closer.py" result        # one retry if a line did 
 
 ## Steps: getting out by hand
 
-1. `get_positions` (read only) for what is held.
+1. `get_positions` (read only) for what is held. Save the reply to
+   `trader/kite/positions.reply.json` and run `closer.py save positions`: the
+   guard lets an exit through only against positions saved in the last 5
+   minutes, for no more than today's MIS quantity.
 2. `ticket.py flatten --symbol M&M --price 3460.5` writes a LIMIT sell (DAY,
    MIS, tagged) for today's MIS position to `trader/orders.json`. `--qty` if
    the portfolio is not up to date, `--tick` if the stock is not in
