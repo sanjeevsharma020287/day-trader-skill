@@ -3,7 +3,8 @@
 > Status: **approved as the basis by Fable on 2026-11-12, with R1 to R10
 > folded in below** (each marked `[Rn]`). First written on `plan/india-zerodha`
 > at `1259b8c`; carried on `feat/india-zerodha` (R10). B1 may start. B0 needs
-> the owner's own word. B2 to B4 wait for Fable's ruling on the B0 notes.
+> the owner's own word. B2 to B7 are built ahead of B0 under R14 to R18 (§8,
+> Fable's sequencing ruling of 2026-11-12).
 > Everything under "Sources" was read on 2026-11-12. Where a fact is
 > secondary or could not be confirmed, the plan says so.
 
@@ -451,7 +452,37 @@ B0 waits on the owner.
   the key from year, month and day, or raise; tested on a holiday and a special
   session in every copy, with a mutant. R12 lands in B0 (§5.2) and R13 in B4
   (§5.3).
-* B2 to B4 wait for Fable's ruling on the B0 notes. B0 also settles the weak
+* **Sequencing ruling (Fable, 2026-11-12, replacing "B2 to B4 wait for the B0
+  notes"):** B2 to B7 are built now; B5 and B6 may share one packet; B2, B3
+  and B4 have one packet each. The code cannot send a real order until the
+  owner records B0:
+  * **R14 (B3, guard):** the guard blocks every `place_order` and
+    `modify_order` unless the broker config has `b0_proven_on:
+    "<YYYY-MM-DD>"` (a real date, not in the future); `dry_run: false` alone is
+    not enough. No tool writes it or `close_gate_proven_on`: both are the
+    owner's hand edit. Tested and mutated for absent, bad date, future date.
+  * **R15 (B2 to B4):** every B0-provisional choice (price-source order,
+    bands, tag text, tag required, DAY/TTL, schedule time) is a named constant
+    or config key marked `B0-provisional`; each packet lists them by file:line.
+  * **R16 (B2, B4):** prices and the tag fail closed. (a) Every price carries
+    its source and age; no timestamp is labelled "age unknown" and gets the
+    wider band; no price means no order, reported. (b) A position whose
+    `order_id` is in the pack's log but whose order has no tag gets its own
+    report line ("in the pack's log, tag missing").
+  * **R17 (B4):** while `close_gate_proven_on` is unset the 3 pm run places and
+    cancels nothing; it reads and reports what is open and names the broker's
+    square-off (15:12 / 15:25) and its fee. `ticket.py` says at approve time
+    that the 3 pm close is not active and a resting BUY can fill after 15:00.
+  * **R18 (B7, merge):** `main` may be merged on full approval of B7 with B0
+    open if R14 and R17 are in, tested and mutated; the B7 packet lists every
+    B0-provisional item and the open B0 items; and the README says near the
+    top that the pack is not yet proven on a real account, runs in dry run
+    until B0 is recorded, and the 3 pm close is off until its gate is
+    recorded. B0's notes then come as their own small branch and review.
+  * **P5:** desk checks of kite-mcp-server's source happen before B3, labelled
+    "read from source", not "B0-proven". If `place_order` has no tag
+    parameter, R12 is settled as order_id only.
+* B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].
 * **The owner's own word, to the builder, for each of these:** B0's real
