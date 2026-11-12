@@ -164,6 +164,19 @@ class Filings(unittest.TestCase):
         self.assertEqual(f[0]["period_end"], D(2026, 9, 30))
         self.assertEqual(unread, 1)
 
+    def test_an_outcome_that_says_to_consider_is_a_filing(self):
+        # SYNTHETIC row (R30): NSE words some outcomes as "held on <date> to consider and approve"; the desc
+        # says it is an outcome, so the text test must not drop it.
+        rows = [{"desc": "Outcome of Board Meeting", "an_dt": "06-Nov-2026 15:00:00", "attchmntFile": "o.pdf",
+                 "attchmntText": "Board meeting held on 06 November 2026 to consider and approve the financial "
+                                 "results for the period ended 30 September 2026"},
+                {"desc": "Financial Result Updates", "an_dt": "07-Nov-2026 15:00:00", "attchmntFile": "p.pdf",
+                 "attchmntText": "The board, at its meeting held to consider the financial results for the "
+                                 "period ended 30 June 2026, approved them"}]
+        f, unread = facts.read_filings(json.dumps(rows).encode("utf-8"))
+        self.assertEqual([x["link"] for x in f], ["o.pdf", "p.pdf"])
+        self.assertEqual(unread, 0)
+
     def test_a_refusal_is_a_plain_error(self):
         with self.assertRaises(facts.FactsError):
             facts.parse_filings(b"<html>Access Denied</html>")

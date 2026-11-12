@@ -222,7 +222,8 @@ def parse_filings(data):
 
 def read_filings(data):
     """-> (results filings newest period first, how many results rows had a quarter this tool could not read).
-    A board-meeting intimation ("to consider the financial results ...") is not a results filing."""
+    A board-meeting intimation ("to consider the financial results ...") is not a results filing. An outcome
+    row (desc "Outcome of Board Meeting" or "Financial Result...") is, even when it says "held ... to consider"."""
     try:
         doc = json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
     except ValueError:
@@ -237,7 +238,9 @@ def read_filings(data):
         if not re.search(r"financial results", text, re.I):
             continue
         desc = (a.get("desc") or "").strip()
-        if re.search(r"intimation", desc, re.I) or re.search(r"\bto consider\b|\bto be held\b", text, re.I):
+        outcome = re.search(r"outcome of board meeting|financial result", desc, re.I)
+        if re.search(r"intimation", desc, re.I) or (
+                not outcome and re.search(r"\bto consider\b|\bto be held\b", text, re.I)):
             continue                       # the board will consider results: none are filed yet
         m = re.search(r"\bended\s+(?:on\s+)?(.+?)(?:[\".]|$)", text, re.I)
         end = parse_text_date(m.group(1)) if m else None

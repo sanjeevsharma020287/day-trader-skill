@@ -76,7 +76,7 @@ Every order:
 
 | check | blocks |
 | --- | --- |
-| config | a key from the old US pack (`*_usd`, `paper`, `pdt_guard`, `sec_user_agent`, `fractional`, `extended_hours`), a broker other than zerodha, `allow_short` or `allow_options` true, a looser or switched-off window or flat_by |
+| config | a key from the old US pack (`*_usd`, `paper`, `pdt_guard`, `sec_user_agent`, `fractional`, `extended_hours`), a broker other than zerodha, `allow_short` or `allow_options` true, a looser or switched-off window or flat_by, a limit that is not a plain number (`"2,000"`; null and 0 mean no limit) |
 | format | variety other than regular (AMO, cover, iceberg, auction), exchange other than NSE, product other than MIS, MARKET or SL-M, validity other than DAY, a quantity that is not a whole number above 0, a price or trigger off the stock's tick, an SL with no trigger or a limit above it, disclosed quantity or TTL, the tag missing |
 | asset | a symbol that is not an NSE equity symbol |
 | short | a SELL of more than you hold (an MIS sell with no position is a short sale); a stop leg whose entry was blocked says so |
@@ -90,8 +90,8 @@ Every entry, on top:
 | size | under `min_order_inr`, over `max_order_inr` |
 | position | the stock would be over `max_position_pct` of the account |
 | cash | it would dip into your cash buffer, or need margin while `allow_margin` is false |
-| stop | no stop leg while `require_stop` is true; a stop leg with another quantity, no trigger or no limit; a stop not below the entry |
-| loss | quantity x (entry limit - the stop leg's limit) + the estimated charges, over `max_loss_per_trade_inr` |
+| stop | no stop leg while `require_stop` is true; a stop leg that is not an SL SELL of the same symbol, or is not a valid order itself (its format reasons are named); one with another quantity; a stop not below the entry; a last price at or under the stop's trigger (the buy fills at once and Kite refuses the stop) |
+| loss | quantity x (entry limit - the stop leg's limit) + the estimated charges, over `max_loss_per_trade_inr`; with `require_stop` false and no stop leg, the whole order value is the max loss (for the daily loss too) |
 | reward:risk | (target - entry) / (entry - stop trigger) under `min_reward_risk`; a target not above the entry |
 | daily loss | today's entries' max losses plus this one over `max_daily_loss_inr` (win or lose, each counts in full) |
 | trades | `max_trades_per_day` entries already placed today |

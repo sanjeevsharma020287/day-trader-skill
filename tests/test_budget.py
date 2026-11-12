@@ -211,6 +211,42 @@ class PlanRules(unittest.TestCase):
         s = size.size_trade(plan(fo=False), cfg(), last=LAST, today=TODAY)
         self.assertEqual((s["fo"], s["fo_unknown"]), (False, False))
 
+    def test_a_last_price_at_or_under_the_stop_is_no_order(self):
+        # R32: the buy would fill at once and Kite refuses an SL sell triggered above the last price.
+        s = size.size_trade(plan(), cfg(), last=dict(LAST, price=3384.4), today=TODAY)
+        self.assertEqual(s["refusal"], "the last price %s3,384.40 is at or under the stop's trigger 3384.40: the "
+                         "buy would fill at once and Kite refuses an SL sell triggered above the last price (or it "
+                         "fires at once), leaving no stop. No order." % R)
+        self.assertEqual(size.kite_pair(s, "P"), [])
+        self.assertIsNone(size.size_trade(plan(), cfg(), last=dict(LAST, price=3384.5), today=TODAY)["refusal"])
+
+    def test_a_limit_that_is_not_a_number_is_one_line(self):
+        # R34: "2,000" is neither switched off in silence nor a traceback, in both modes and at the CLI.
+        for key in size.NUMBER_KEYS:
+            for bad in ("2,000", True):
+                with self.assertRaises(size.SizeError) as cm:
+                    size.size_trade(plan(), cfg(**{key: bad}), last=LAST, today=TODAY)
+                self.assertEqual(str(cm.exception), "trader/config.json: %s must be a number (or null), got %r"
+                                 % (key, bad))
+        with self.assertRaises(size.SizeError):
+            size.size(size.parse_weights(size.weights_from_arg("SBIN=100")), cfg(max_order_inr="2,000"),
+                      prices=PRICES)
+        r = size.size(size.parse_weights(size.weights_from_arg("SBIN=100")),
+                      cfg(cash_buffer_pct=None, max_position_pct=None),
+                      prices=PRICES)        # null: no buffer, no cap (not a traceback)
+        self.assertEqual(r["cash_buffer_pct"], 0.0)
+        self.assertIsNone(size.size_trade(plan(), cfg(max_order_inr=None), last=LAST, today=TODAY)["refusal"])
+        d = tempfile.mkdtemp()
+        try:
+            c = os.path.join(d, "config.json")
+            with open(c, "w") as fh:
+                json.dump(cfg(max_loss_per_trade_inr="2,000"), fh)
+            code, _, err = run(["--plan", PLAN, "--config", c, "--now", NOW])
+            self.assertEqual((code, err.strip()), (1, "size.py: trader/config.json: max_loss_per_trade_inr must "
+                                                      "be a number (or null), got '2,000'"))
+        finally:
+            shutil.rmtree(d)
+
     def test_an_old_us_config_is_refused_by_name(self):
         d = tempfile.mkdtemp()
         try:

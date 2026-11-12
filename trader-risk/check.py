@@ -111,6 +111,9 @@ SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9&-]{0,19}$")
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 PAISA = 0.005
 FRESH_MINUTES = 15
+NUMBER_KEYS = ("budget", "cash_buffer_pct", "max_position_pct", "max_order_inr", "min_order_inr",
+               "max_loss_per_trade_inr", "max_daily_loss_inr", "max_trades_per_day", "max_orders_per_day",
+               "min_reward_risk")
 
 
 class RiskError(Exception):
@@ -291,6 +294,9 @@ def config_problems(c):
     if c.get("allow_short"):
         out.append("config: \"allow_short\": true: this pack is long only (an MIS sell with no position is a "
                    "short sale)")
+    for key in bad_numbers(c):
+        out.append("config: %s must be a number (or null), got %r: a limit that is not a number is not "
+                   "switched off" % (key, c[key]))
     for key, default, rule in (("no_entries_before", "09:30", "no order before 9:30"),
                                ("no_entries_after", "15:00", "no order from 3:00 PM"),
                                ("flat_by", "15:00", "every position closed by 3:00 PM")):
@@ -310,6 +316,64 @@ def config_problems(c):
             out.append("config: %s %s is later than 15:00: the owner's rule is %s (it can only be made earlier)"
                        % (key, t.strftime("%H:%M"), rule))
     return out
+
+
+def bad_numbers(c):
+    """The NUMBER_KEYS present with a value that is not a plain number: "2,000", "2000", true, NaN.
+    null and 0 keep their meaning (no limit)."""
+    out = []
+    for key in NUMBER_KEYS:
+        v = c.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            out.append(key)
+    return out
+
+
+def format_reasons(o, tag_want):
+    """The format reasons of one Kite order on its own (also used to judge an entry's stop leg)."""
+    reasons = []
+    side = str(o.get("transaction_type", "")).strip().upper()
+    otype = str(o.get("order_type", "")).strip().upper()
+    qty = o.get("quantity")
+    q = _f(qty)
+    tick = _f(o.get("tick")) or 0.01
+    price, trig = _f(o.get("price")), _f(o.get("trigger_price"))
+    if str(o.get("variety", "")).lower() != "regular":
+        reasons.append("format: variety %r: only regular orders (no AMO, cover, iceberg or auction)"
+                       % o.get("variety"))
+    if str(o.get("exchange", "")).upper() != "NSE":
+        reasons.append("format: exchange %r: this pack trades on NSE only" % o.get("exchange"))
+    if str(o.get("product", "")).upper() != "MIS":
+        reasons.append("format: product %r: intraday (MIS) only" % o.get("product"))
+    if side not in ("BUY", "SELL"):
+        reasons.append("format: transaction_type must be BUY or SELL, got %r" % o.get("transaction_type"))
+    if otype not in ("LIMIT", "SL"):
+        reasons.append("format: order_type %r: LIMIT and SL only (MARKET and SL-M need market protection "
+                       "the kite MCP server does not send)" % o.get("order_type"))
+    if str(o.get("validity", "")).upper() != B0_PROVISIONAL["entry_validity"]:
+        reasons.append("format: validity %r: DAY only (IOC is the 3 pm close's, TTL waits for B0)"
+                       % o.get("validity"))
+    if q is None or q <= 0 or q != int(q) or isinstance(qty, bool):
+        reasons.append("format: quantity must be a whole number above 0, got %r" % (qty,))
+    if price is None or price <= 0:
+        reasons.append("format: a %s order needs a price above 0" % (otype or "LIMIT"))
+    elif not on_tick(price, tick):
+        reasons.append("format: price %s is off the %s tick" % (_p(price), _num(tick)))
+    if otype == "SL":
+        if trig is None or trig <= 0:
+            reasons.append("format: an SL order needs a trigger_price")
+        else:
+            if not on_tick(trig, tick):
+                reasons.append("format: trigger_price %s is off the %s tick" % (_p(trig), _num(tick)))
+            if price is not None and side == "SELL" and price > trig + PAISA:
+                reasons.append("format: an SL sell's limit %s is above its trigger %s" % (_p(price), _p(trig)))
+    if o.get("disclosed_quantity") or o.get("validity_ttl") or o.get("iceberg_legs"):
+        reasons.append("format: disclosed quantity, TTL and iceberg fields are not used by this pack")
+    if B0_PROVISIONAL["tag_required"] and o.get("tag") != tag_want:
+        reasons.append("format: tag %r: every order this pack places carries the tag %r" % (o.get("tag"), tag_want))
+    return reasons
 
 
 def window(now_ist, c):
@@ -458,7 +522,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     now_ist = to_ist(now_utc)
     today = today or now_ist.date().isoformat()
     cfg_bad = config_problems(dict(cfg or {}))
-    acct, top_warn = account(c, portfolio, prices)
+    for key in bad_numbers(c):
+        c[key] = DEFAULTS[key]      # only so the arithmetic runs: cfg_bad already BLOCKs every order
+    try:
+        acct, top_warn = account(c, portfolio, prices)
+    except RiskError:
+        if not cfg_bad:
+            raise
+        acct, top_warn = {"cash": 0.0, "shares": {}, "values": {}}, []   # a bad "budget": BLOCKed above
     blocked = {str(b).upper() for b in c.get("blocked") or []}
     done_today = placed_today(state, today)
     entries_today = [r for r in done_today if r.get("kind") == "entry"]
@@ -479,9 +550,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     top_warn.extend(cfg_bad)
     tag_want = B0_PROVISIONAL["tag"]
     stops = {}
-    for o in orders:
+    for j, o in enumerate(orders, 1):
         if str(o.get("leg") or "") == "stop" and o.get("pair"):
-            stops[str(o["pair"])] = o
+            stops[str(o["pair"])] = (j, o)
     seen, results, blocked_pairs = set(), [], {}
     batch_entries, batch_loss = 0, 0.0
 
@@ -492,45 +563,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         otype = str(o.get("order_type", "")).strip().upper()
         qty = o.get("quantity")
         q = _f(qty)
-        tick = _f(o.get("tick")) or 0.01
         price, trig = _f(o.get("price")), _f(o.get("trigger_price"))
         leg = str(o.get("leg") or "")
         plan = o.get("plan") if isinstance(o.get("plan"), dict) else {}
 
         # format
-        if str(o.get("variety", "")).lower() != "regular":
-            reasons.append("format: variety %r: only regular orders (no AMO, cover, iceberg or auction)"
-                           % o.get("variety"))
-        if str(o.get("exchange", "")).upper() != "NSE":
-            reasons.append("format: exchange %r: this pack trades on NSE only" % o.get("exchange"))
-        if str(o.get("product", "")).upper() != "MIS":
-            reasons.append("format: product %r: intraday (MIS) only" % o.get("product"))
-        if side not in ("BUY", "SELL"):
-            reasons.append("format: transaction_type must be BUY or SELL, got %r" % o.get("transaction_type"))
-        if otype not in ("LIMIT", "SL"):
-            reasons.append("format: order_type %r: LIMIT and SL only (MARKET and SL-M need market protection "
-                           "the kite MCP server does not send)" % o.get("order_type"))
-        if str(o.get("validity", "")).upper() != B0_PROVISIONAL["entry_validity"]:
-            reasons.append("format: validity %r: DAY only (IOC is the 3 pm close's, TTL waits for B0)"
-                           % o.get("validity"))
-        if q is None or q <= 0 or q != int(q) or isinstance(qty, bool):
-            reasons.append("format: quantity must be a whole number above 0, got %r" % (qty,))
-        if price is None or price <= 0:
-            reasons.append("format: a %s order needs a price above 0" % (otype or "LIMIT"))
-        elif not on_tick(price, tick):
-            reasons.append("format: price %s is off the %s tick" % (_p(price), _num(tick)))
-        if otype == "SL":
-            if trig is None or trig <= 0:
-                reasons.append("format: an SL order needs a trigger_price")
-            else:
-                if not on_tick(trig, tick):
-                    reasons.append("format: trigger_price %s is off the %s tick" % (_p(trig), _num(tick)))
-                if price is not None and side == "SELL" and price > trig + PAISA:
-                    reasons.append("format: an SL sell's limit %s is above its trigger %s" % (_p(price), _p(trig)))
-        if o.get("disclosed_quantity") or o.get("validity_ttl") or o.get("iceberg_legs"):
-            reasons.append("format: disclosed quantity, TTL and iceberg fields are not used by this pack")
-        if B0_PROVISIONAL["tag_required"] and o.get("tag") != tag_want:
-            reasons.append("format: tag %r: every order this pack places carries the tag %r" % (o.get("tag"), tag_want))
+        reasons.extend(format_reasons(o, tag_want))
 
         # asset
         if sym and not SYMBOL.match(sym):
@@ -550,7 +588,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                            % (_num(q or 0), sym, _num(held)))
         value = q * price if (q and price) else None
 
-        max_loss = risk_ps = rr = stop = target = charges = None
+        max_loss = risk_ps = rr = stop = target = charges = last_px = None
         if kind == "entry" and side == "BUY":
             pr = prices.get(sym)
             if pr is None:
@@ -565,6 +603,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     later.append("price: the last price %s is older than %d minutes" % (price_label(pr, now_utc),
                                                                                        FRESH_MINUTES))
                 else:
+                    last_px = pr["price"]
                     info.append("last price %s" % price_label(pr, now_utc))
                     if price and pr["price"] > price + PAISA:
                         warns.append("the last price %s is above your limit %s: the order may not fill, and an "
@@ -592,25 +631,42 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     later.append("position: %s would be %s, %.1f%% of the %s account, over your %s%% cap"
                                  % (sym, inr(pos_after), 100.0 * pos_after / total, inr(total),
                                     _num(c["max_position_pct"])))
-            sleg = stops.get(str(o.get("pair") or ""))
+            sj, sleg = stops.get(str(o.get("pair") or ""), (None, None))
             stop_limit = _f(sleg.get("price")) if sleg else None
             stop = _f(sleg.get("trigger_price")) if sleg else None
             target = _f(plan.get("target"))
+            lim = _f(c.get("max_loss_per_trade_inr"))
             if sleg is None:
                 if c.get("require_stop", True):
                     later.append("stop: no stop leg. Every entry needs one (\"require_stop\": true): an SL SELL of "
                                  "the same quantity, paired with it (trader-budget writes both)")
-            elif stop is None or stop_limit is None:
-                later.append("stop: the stop leg needs a trigger_price and a limit price")
-            elif _f(sleg.get("quantity")) != q:
+                elif value is not None:
+                    max_loss = round(value, 2)      # R33: with no stop the whole order is at risk
+                    info.append("no stop leg: the whole order value %s counts as its max loss" % inr(max_loss))
+                    if lim and max_loss > lim + PAISA:
+                        later.append("loss: no stop leg, so the whole order value %s is the max loss, over your %s "
+                                     "max loss per trade" % (inr(max_loss), inr(lim)))
+            elif (str(sleg.get("tradingsymbol", "")).strip().upper() != sym
+                  or str(sleg.get("transaction_type", "")).strip().upper() != "SELL"
+                  or str(sleg.get("order_type", "")).strip().upper() != "SL"):
+                later.append("stop: the stop leg #%d is not an SL SELL of %s (it is %s %s %s)"
+                             % (sj, sym, sleg.get("order_type"), sleg.get("transaction_type"),
+                                sleg.get("tradingsymbol")))
+            elif format_reasons(sleg, tag_want):
+                later.append("stop: the stop leg #%d is not a valid order (%s), so this entry would have no stop"
+                             % (sj, "; ".join(x[len("format: "):] for x in format_reasons(sleg, tag_want))))
+            elif _f(sleg.get("quantity")) != q:      # (a missing trigger or limit is a format reason above)
                 later.append("stop: the stop leg's quantity %s is not the entry's %s" % (sleg.get("quantity"), qty))
             elif price and stop_limit and stop and stop >= price - PAISA:
                 later.append("stop: the stop %s must be below the entry %s" % (_p(stop), _p(price)))
+            elif last_px is not None and stop and last_px <= stop + PAISA:
+                later.append("stop: the last price %s is at or under the stop's trigger %s: the buy would fill at "
+                             "once and Kite refuses an SL sell triggered above the last price (or it fires at once), "
+                             "leaving a position with no stop" % (inr(last_px), _p(stop)))
             elif price and stop_limit and q:
                 risk_ps = round(price - stop_limit, 2)
                 charges = est_charges(int(q), price, stop_limit)
                 max_loss = round(q * risk_ps + charges, 2)
-                lim = _f(c.get("max_loss_per_trade_inr"))
                 if lim and max_loss > lim + PAISA:
                     later.append("loss: %s shares x %s (entry %s to the stop's limit %s) + %s charges = %s, over "
                                  "your %s max loss per trade" % (_num(q), inr(risk_ps), _p(price), _p(stop_limit),
@@ -632,7 +688,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 if used + max_loss > daily + PAISA:
                     later.append("daily loss: %s already at risk today plus %s for this one = %s, over your %s "
                                  "daily loss limit" % (inr(used), inr(max_loss), inr(used + max_loss), inr(daily)))
-            cap_t = int(c.get("max_trades_per_day") or 0)
+            cap_t = int(_f(c.get("max_trades_per_day")) or 0)
             if cap_t and len(entries_today) + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
@@ -656,7 +712,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             seen.add((sym, side))
 
         passed_so_far = sum(1 for r in results if r["verdict"] == "PASS")
-        cap_n = int(c.get("max_orders_per_day") or 0)
+        cap_n = int(_f(c.get("max_orders_per_day")) or 0)
         if cap_n and len(done_today) + passed_so_far >= cap_n:
             later.append("daily limit: %d placed today plus %d passed earlier in this batch, your limit is %d a day"
                          % (len(done_today), passed_so_far, cap_n))

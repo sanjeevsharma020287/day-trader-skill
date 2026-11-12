@@ -162,11 +162,33 @@ class Format(unittest.TestCase):
         res = go([e, dict(s, price=3390.0)])
         self.assertTrue(any("an SL sell's limit 3390.00 is above its trigger 3384.40" in r
                             for r in res["results"][1]["reasons"]))
+        self.assertIn("stop: the stop leg #2 is not a valid order (an SL sell's limit 3390.00 is above its trigger "
+                      "3384.40), so this entry would have no stop", res["results"][0]["reasons"])   # R31
         res = go([e, dict(s, trigger_price=None)])
         self.assertTrue(any("an SL order needs a trigger_price" in r for r in res["results"][1]["reasons"]))
-        self.assertIn("stop: the stop leg needs a trigger_price and a limit price", res["results"][0]["reasons"])
+        self.assertIn("stop: the stop leg #2 is not a valid order (an SL order needs a trigger_price), so this entry "
+                      "would have no stop", res["results"][0]["reasons"])
         res = go([e, dict(s, trigger_price=3384.45)])
         self.assertTrue(any("trigger_price 3384.45 is off the 0.1 tick" in r for r in res["results"][1]["reasons"]))
+        self.assertEqual(res["results"][0]["verdict"], "BLOCK")
+
+    def test_an_entry_is_blocked_when_its_stop_leg_is(self):
+        # R31: the entry passes only with a stop leg that is a SELL SL of the same symbol with no format reason.
+        e, s = pair()
+        for over, words in (({"tag": None}, "stop: the stop leg #2 is not a valid order (tag None"),
+                            ({"product": "CNC"}, "stop: the stop leg #2 is not a valid order (product 'CNC'"),
+                            ({"validity": "IOC"}, "stop: the stop leg #2 is not a valid order (validity 'IOC'"),
+                            ({"price": None}, "stop: the stop leg #2 is not a valid order (a SL order needs a price"),
+                            ({"tradingsymbol": "SBIN"}, "stop: the stop leg #2 is not an SL SELL of M&M (it is SL "
+                                                        "SELL SBIN)"),
+                            ({"transaction_type": "BUY"}, "stop: the stop leg #2 is not an SL SELL of M&M (it is SL "
+                                                          "BUY M&M)"),
+                            ({"order_type": "LIMIT", "trigger_price": None},
+                             "stop: the stop leg #2 is not an SL SELL of M&M (it is LIMIT SELL M&M)")):
+            r = go([e, dict(s, **over)])["results"][0]
+            self.assertEqual(r["verdict"], "BLOCK", over)
+            self.assertTrue(any(x.startswith(words) for x in r["reasons"]), (over, r["reasons"]))
+        self.assertEqual(go([e, s])["results"][0]["verdict"], "PASS")
 
     def test_a_sell_with_nothing_held_is_a_short_sale(self):
         _, s = pair()
@@ -214,11 +236,46 @@ class Limits(unittest.TestCase):
     def test_the_stop_leg_is_required_and_must_match(self):
         e, s = pair()
         self.assertTrue(any(r.startswith("stop: no stop leg") for r in self.reasons(orders=[e])))
-        self.assertEqual(go([e], c=cfg(require_stop=False))["block"], 0)
+        free = cfg(require_stop=False, max_loss_per_trade_inr=None, max_daily_loss_inr=None)
+        r = go([e], c=free)["results"][0]
+        self.assertEqual((r["verdict"], r["max_loss"]), ("PASS", 109664.0))
         r = go([e, dict(s, quantity=31)])["results"][0]["reasons"]
         self.assertIn("stop: the stop leg's quantity 31 is not the entry's 32", r)
         r = go([dict(e, price=3380.0), s])["results"][0]["reasons"]
         self.assertIn("stop: the stop 3384.40 must be below the entry 3380.00", r)
+
+    def test_a_stopless_buy_counts_its_whole_value(self):
+        # R33: with "require_stop": false, a buy with no stop leg puts its whole value at risk, for both limits.
+        e, _ = pair()
+        r = go([e], c=cfg(require_stop=False))["results"][0]
+        self.assertIn("no stop leg: the whole order value %s1,09,664.00 counts as its max loss" % R, r["info"])
+        self.assertIn("loss: no stop leg, so the whole order value %s1,09,664.00 is the max loss, over your "
+                      "%s2,000.00 max loss per trade" % (R, R), r["reasons"])
+        r = go([e], c=cfg(require_stop=False, max_loss_per_trade_inr=None))["results"][0]
+        self.assertTrue(any(x.startswith("daily loss: %s0.00 already at risk today plus %s1,09,664.00" % (R, R))
+                            for x in r["reasons"]), r["reasons"])
+
+    def test_a_last_price_at_or_under_the_stop_is_no_entry(self):
+        # R32: the LIMIT buy fills at once and Kite refuses an SL sell triggered above the last price.
+        words = ("stop: the last price %s3,384.40 is at or under the stop's trigger 3384.40: the buy would fill at "
+                 "once" % R)
+        self.assertTrue(any(x.startswith(words) for x in self.reasons(p=prices(3384.4))))
+        self.assertFalse(any("at or under the stop" in x for x in self.reasons(p=prices(3384.5))))
+
+    def test_a_limit_that_is_not_a_number_is_a_config_block(self):
+        # R34: never switched off in silence, never a traceback; null and 0 keep their meaning (no limit).
+        keys = ("budget", "cash_buffer_pct", "max_position_pct", "max_order_inr", "min_order_inr",
+                "max_loss_per_trade_inr", "max_daily_loss_inr", "max_trades_per_day", "max_orders_per_day",
+                "min_reward_risk")
+        self.assertEqual(check.NUMBER_KEYS, keys)
+        for key in keys:
+            for bad in ("2,000", "2000", True, float("nan")):
+                res = go(c=cfg(**{key: bad}))
+                self.assertEqual(res["pass"], 0, (key, bad))
+                self.assertIn("config: %s must be a number (or null), got %r: a limit that is not a number is not "
+                              "switched off" % (key, bad), res["results"][0]["reasons"], (key, bad))
+        for ok in (None, 0):
+            self.assertEqual(go(c=cfg(max_loss_per_trade_inr=ok))["block"], 0, ok)
 
     def test_reward_risk_and_target(self):
         e, s = pair()

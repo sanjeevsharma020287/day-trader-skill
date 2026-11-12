@@ -67,6 +67,9 @@ If `trader/config.json` does not exist, copy `config.example.json` into
 A config from the old US pack (`max_loss_per_trade_usd` and the other `*_usd`
 keys, `paper`, `pdt_guard`, `sec_user_agent`, `fractional`, `extended_hours`)
 or a broker other than `zerodha` is refused by name, so it never half-applies.
+A limit that is not a plain number (`"2,000"`, `"2000"`, `true`) is refused
+in one line naming the key: it is never switched off in silence. `null` and
+`0` mean no limit.
 
 ## Step 2: size the trade
 
@@ -103,7 +106,9 @@ fee for a position it squares off is not in it.
 
 It refuses, and writes no order, when: there is no last price under 15
 minutes old (each price carries its source and age; one with no time is of
-unknown age and not used), the size is zero shares, the order is under the
+unknown age and not used), the last price is at or under the stop's trigger
+(the buy would fill at once and Kite refuses a stop above the last price, so
+the position would have no stop), the size is zero shares, the order is under the
 minimum, reward:risk is under `min_reward_risk`, the stop is not below the
 entry, the target is not above it (the move already happened), the plan is
 for another day or has no tick, the symbol is blocked, or the plan is a

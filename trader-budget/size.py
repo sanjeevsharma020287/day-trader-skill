@@ -103,6 +103,9 @@ OLD_KEYS = {
 }
 EPS = 1e-9
 FRESH_MINUTES = 15
+NUMBER_KEYS = ("budget", "cash_buffer_pct", "max_position_pct", "max_order_inr", "min_order_inr",
+               "max_loss_per_trade_inr", "max_daily_loss_inr", "max_trades_per_day", "max_orders_per_day",
+               "min_reward_risk")
 DEFAULT_UNIVERSE = "trader/universe.txt"
 SETUP_WORDS = {"orb": "opening-range breakout", "flag": "flag", "bounce": "oversold bounce"}
 
@@ -302,6 +305,10 @@ def config_refusal(cfg):
         raise SizeError("trader/config.json has keys from the old US pack: %s" % ", ".join(bad))
     if str((cfg or {}).get("broker") or "zerodha").lower() != "zerodha":
         raise SizeError("broker %r: this pack trades on NSE through Zerodha only" % cfg.get("broker"))
+    for key in NUMBER_KEYS:      # R34: null and 0 mean no limit; anything else must be a plain number
+        v = (cfg or {}).get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
+            raise SizeError("trader/config.json: %s must be a number (or null), got %r" % (key, v))
 
 
 def _f(x):
@@ -468,6 +475,7 @@ def size_trade(plan, cfg, budget=None, limit=None, last=None, cash=None, today=N
     today  India date (YYYY-MM-DD); a plan for another day is refused"""
     c = dict(DEFAULTS)
     c.update(cfg or {})
+    config_refusal(c)
     if not isinstance(plan, dict):
         raise SizeError("the plan is not a JSON object")
     sym = str(plan.get("symbol") or "").strip().upper()
@@ -553,6 +561,10 @@ def size_trade(plan, cfg, budget=None, limit=None, last=None, cash=None, today=N
     if last is None:
         refusal = ("no last price for %s under %d minutes old: get one first (trader-alerts: alerts.py quote %s "
                    "--write, or Kite's LTP). No order." % (sym, FRESH_MINUTES, sym))
+    elif _f(last.get("price")) is not None and _f(last["price"]) <= stop_trig + 0.005:
+        refusal = ("the last price %s is at or under the stop's trigger %s: the buy would fill at once and Kite "
+                   "refuses an SL sell triggered above the last price (or it fires at once), leaving no stop. "
+                   "No order." % (money(last["price"]), _price(stop_trig)))
     elif qty == 0:
         if bound[0] == "max loss":
             refusal = ("one share risks %s plus charges (entry %s minus the stop's limit %s), more than your %s max "
@@ -738,11 +750,12 @@ def whole_shares(slices, prices, order, cap, cash):
 
 def size(rows, cfg, budget=None, prices=None, top=None):
     """Weights mode. Pure function: weights + rules -> the full sizing result (a dict), in whole shares."""
+    config_refusal(cfg)
     budget = float(budget if budget is not None else (cfg.get("budget") or 0))
     if budget <= 0:
         raise SizeError("no budget: pass --budget or set \"budget\" in trader/config.json")
-    buf_pct = float(cfg.get("cash_buffer_pct", 10))
-    cap_pct = float(cfg.get("max_position_pct", 25))
+    buf_pct = float(cfg.get("cash_buffer_pct", 10) or 0)            # null: no buffer
+    cap_pct = float(cfg.get("max_position_pct", 25) or 100)         # null: no cap
     min_order = float(cfg.get("min_order_inr", 500) or 0)
     if not 0 <= buf_pct < 100:
         raise SizeError("cash_buffer_pct must be between 0 and 100")
