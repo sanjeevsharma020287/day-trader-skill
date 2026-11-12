@@ -33,29 +33,17 @@ recorded.
 
 ## Install
 
-Paste this into Claude:
-
-```
-https://github.com/Jakeschincariol/day-trader-skill
-
-install skill
-```
-
-Or as a plugin, in Claude Code:
-
-```
-/plugin marketplace add Jakeschincariol/day-trader-skill
-/plugin install day-trader-skill@day-trader-skill
-```
-
-Claude Code namespaces plugin skills, so installed as a plugin they show up as
-`/day-trader-skill:trader-scanner` and so on. Copy the folders instead if you want
-plain `/trader-scanner`:
+Clone or download this repository (the one you are reading), then, from its
+folder, copy the skill folders into Claude Code:
 
 ```bash
-git clone https://github.com/Jakeschincariol/day-trader-skill.git
-cp -r day-trader-skill/trader-* ~/.claude/skills/
+cp -r trader-* ~/.claude/skills/
 ```
+
+They show up as `/trader-scanner` and so on. For one project only, copy them
+into that project's `.claude/skills/` instead. The upstream repository
+credited above is the US pack, not this code: installing from it gives you
+the US broker and none of these gates.
 
 The tools need Python 3.8 or newer. Nothing to pip install. To place real
 orders (after B0) the pack runs in Claude Code on this project folder, with
@@ -73,7 +61,7 @@ the kite server in `.mcp.json` and the guard hook in `.claude/settings.json`:
 | `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a rupee: 10,000 simulated sessions plus every past time the setup fired. |
 | `/trader-risk` | Risk Manager | Checks every Kite order against your limits, the window and the charges, and stops anything over them. |
 | `/trader-budget` | Budget Manager | Sizes every trade to your budget and your max loss, charges included, as a LIMIT buy and its stop. |
-| `/trader-broker` | Order Executor | Sends approved orders to Zerodha, dry run by default, never without your yes. |
+| `/trader-broker` | Order Executor | Sends approved orders to Zerodha, dry run by default. No entry without your yes; the one exception is the 3 pm close of its own positions, off until its gate. |
 | `/trader-alerts` | Price Alerts | Rings when a price, a stop, the opening bell or 3:00 PM hits. |
 | `/trader-analyst` | Earnings Analyst | Reads quarterly results and sums up what changed. |
 

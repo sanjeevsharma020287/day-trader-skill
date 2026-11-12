@@ -133,7 +133,11 @@ the kite server is not set up there. Every step below is the user's own.
    **Then test the installed command by hand.** A hook command that does not
    start (for example `python3` where Windows has only `py`) exits with a
    code other than 2 and blocks nothing. Run the command exactly as it is in
-   `.claude/settings.json`, from the project folder, on empty input:
+   `.claude/settings.json`, from the project folder, on empty input. The
+   interpreter in the test must be the one in `.claude/settings.json`: the
+   bash line uses `python3`, as the example file does; the PowerShell line
+   uses `py` and is only for a settings.json changed to `py`. Testing with a
+   different interpreter proves nothing about the installed hook.
 
 ```bash
 CLAUDE_PROJECT_DIR="$PWD" bash -c 'echo "" | python3 "$CLAUDE_PROJECT_DIR/trader-broker/guard.py"; echo "exit $?"'

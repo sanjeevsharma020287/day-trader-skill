@@ -130,12 +130,16 @@ class Repo(unittest.TestCase):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             readme = " ".join(fh.read().split())
         self.assertTrue(readme.startswith("# The Day Trader skill"))
-        for line in (ABOUT,
-                     "https://github.com/Jakeschincariol/day-trader-skill install skill",
-                     "/plugin marketplace add Jakeschincariol/day-trader-skill",
-                     "/plugin install day-trader-skill@day-trader-skill",
-                     "## Fine print"):
+        for line in (ABOUT, "cp -r trader-* ~/.claude/skills/", "## Fine print"):
             self.assertIn(line, readme)
+        # R49: no install line names the upstream (US) repository; the credit links stay.
+        self.assertNotIn("Jakeschincariol/day-trader-skill", readme)
+        self.assertIn("github.com/Jakeschincariol/trader-skill", readme)
+        # R48: the 3 pm close is an order with no yes, so nothing shipped says "never without your yes".
+        with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json"), encoding="utf-8") as fh:
+            market = fh.read()
+        for text in (readme, market):
+            self.assertNotIn("never without your yes", text.lower())
         for s in SKILLS:
             self.assertIn("/" + s, readme, s)
 

@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "day-trader-skill",
-      "description": "Ten Claude skills for day trading on NSE: a chart scanner, a news monitor, an entry timer, an exit planner, a time machine that replays 10,000 sessions, a risk manager, a budget manager, an order executor for Zerodha (dry run by default, never without your yes), price alerts and an earnings analyst.",
+      "description": "Ten Claude skills for day trading on NSE: a chart scanner, a news monitor, an entry timer, an exit planner, a time machine that replays 10,000 sessions, a risk manager, a budget manager, an order executor for Zerodha (dry run by default, no entry without your yes; the 3 pm close of its own positions is the one exception, off until its gate), price alerts and an earnings analyst.",
       "source": "./",
       "category": "productivity",
       "homepage": "https://github.com/Jakeschincariol/day-trader-skill"
