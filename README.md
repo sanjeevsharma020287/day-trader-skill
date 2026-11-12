@@ -1,25 +1,35 @@
 # The Day Trader skill
 
-10 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a dollar.
+10 Claude skills for day trading on NSE: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a rupee.
 
-Free, MIT, no signup, no API key. The tools are plain Python that read free
-public data: Yahoo Finance charts, Nasdaq Trader's symbol lists and SEC
-EDGAR.
+> **Not proven on a real account yet.** This pack runs in **dry run** (it
+> shows the exact order and sends nothing) until its owner records the first
+> two real orders by hand (`b0_proven_on`, PLAN_INDIA_ZERODHA.md R14). **The 3
+> pm close is off** until its own gate is recorded (`close_gate_proven_on`,
+> R17): until then Zerodha's square-off at 15:12 / 15:25 closes anything you
+> leave open, for ₹50 + GST an order.
+
+Indian market only: NSE equity, intraday (MIS), long only, through Zerodha.
+Free and MIT. The tools are plain Python that read free public data: Yahoo
+Finance charts (`.NS`), NSE's own lists and announcements, Kite's public
+instruments list and Google News for India. Orders go through Zerodha's own
+open-source MCP server, run on your machine with your Kite Connect app.
 
 One scans thousands of charts for setups. Another tracks breaking news on
 every stock you watch. One watches a setup bar by bar and tells you the moment
 to get in, and another sets your stop and your target before you do. And the
-craziest one is the Time Machine: before you risk a dollar, it replays the
-rest of the session 10,000 times from the stock's own recent bars, plus every
-past day the same setup fired, and tells you the honest odds.
+craziest one is the Time Machine: before you risk a rupee, it replays the rest
+of the session 10,000 times from the stock's own recent bars, plus every past
+day the same setup fired, and tells you the honest odds.
 
-And no trade goes through until you say yes. Nothing in this pack can place
-an order on its own. Paper trading is the default.
+No entry goes through until you say yes. The window is the owner's rule, in
+code: no order before 9:30 AM, no new entry from 3:00 PM India time, and every
+position closed by 3:00 PM. The one order this pack can place with no yes is
+the 3 pm close of its own positions, and that is off until its gate is
+recorded.
 
-> **Looking for the original Trader skill?** Copy an investor's 13F, the
-> stock screener, tax lots and rebalancing live in
-> [github.com/Jakeschincariol/trader-skill](https://github.com/Jakeschincariol/trader-skill).
-> This repo is its day-trading sequel: the Trader skill v2.
+> **Looking for the original Trader skill?** The US pack this one grew from
+> lives in [github.com/Jakeschincariol/trader-skill](https://github.com/Jakeschincariol/trader-skill).
 
 ## Install
 
@@ -47,80 +57,76 @@ git clone https://github.com/Jakeschincariol/day-trader-skill.git
 cp -r day-trader-skill/trader-* ~/.claude/skills/
 ```
 
-Project-local instead of global: copy the same folders into your repo's
-`.claude/skills/`. No Claude Code at all? Paste any single `SKILL.md` at the
-top of a chat and it runs as a mode. You lose the Python tools, but the method
-works.
-
-The tools need Python 3.8 or newer. Nothing to pip install. The SEC tools
-(news filings, the analyst) ask you to identify yourself: put your name and
-email in `trader/config.json` (`"sec_user_agent": "Your Name you@example.com"`)
-or in the `SEC_USER_AGENT` environment variable.
+The tools need Python 3.8 or newer. Nothing to pip install. To place real
+orders (after B0) the pack runs in Claude Code on this project folder, with
+the kite server in `.mcp.json` and the guard hook in `.claude/settings.json`:
+`/trader-broker` walks through it.
 
 ## The ten
 
 | command | job | what it does |
 | --- | --- | --- |
-| `/trader-scanner` | Chart Scanner | Scans thousands of charts for setups: opening-range breakouts, flags, oversold bounces. |
-| `/trader-news` | News Monitor | Tracks breaking news on every stock you watch and flags what moves it. |
-| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in. |
-| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, so you know when to get out. |
-| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. |
-| `/trader-risk` | Risk Manager | Checks every trade against your limits and stops anything over them. |
-| `/trader-budget` | Budget Manager | Sizes every position to your budget and your max loss per trade. |
-| `/trader-broker` | Order Executor | Sends approved orders to your broker, paper trading by default, never without your yes. |
-| `/trader-alerts` | Price Alerts | Rings when a price, a stop or the opening bell hits. |
-| `/trader-analyst` | Earnings Analyst | Reads earnings reports and sums up what changed. |
+| `/trader-scanner` | Chart Scanner | Scans NSE charts for setups: opening-range breakouts, flags, oversold bounces. |
+| `/trader-news` | News Monitor | Tracks headlines and NSE filings on every stock you watch and flags what moves it. |
+| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in, from 9:30 AM until 3:00 PM. |
+| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, on the stock's tick, flat by 3:00 PM. |
+| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a rupee: 10,000 simulated sessions plus every past time the setup fired. |
+| `/trader-risk` | Risk Manager | Checks every Kite order against your limits, the window and the charges, and stops anything over them. |
+| `/trader-budget` | Budget Manager | Sizes every trade to your budget and your max loss, charges included, as a LIMIT buy and its stop. |
+| `/trader-broker` | Order Executor | Sends approved orders to Zerodha, dry run by default, never without your yes. |
+| `/trader-alerts` | Price Alerts | Rings when a price, a stop, the opening bell or 3:00 PM hits. |
+| `/trader-analyst` | Earnings Analyst | Reads quarterly results and sums up what changed. |
 
 ## How to use it
 
 Everything lands in a `trader/` folder in your project, and each skill reads
-what the last one wrote:
+what the last one wrote. Add `trader/` to your project's `.gitignore`.
 
 ```
 scanner -> news -> entry -> exit -> timemachine -> budget -> risk -> broker   (one trade)
-alerts: stop, target, flat by the close                                       (while it is open)
+alerts: stop, target, flat by 3:00 PM                                         (while it is open)
 news / analyst                                                                 (on a schedule)
 ```
 
-`trader/` holds your portfolio, your broker decision log and `trader/config.json` (with your
-name and email for the SEC). Add `trader/` to your project's `.gitignore` so none of it is committed.
+The reel: Mahindra & Mahindra (M&M), Wednesday 2026-11-11, real NSE data.
 
-An example, the trade in the reel: Tesla, Monday October 19 2026, real data.
-
-1. **`/trader-scanner`** at 10:15 AM ET: of the 231 charts in the reel's
-   scan, 42 had closed above their 15-minute opening range. TSLA is one: range 354.47 to 362.18,
-   the 10:10 candle closed at 364.18, 0.55 % over the top.
-2. **`/trader-news`**: the morning's TSLA headlines, in New York time
-   ("Tesla-SpaceX Merger Mania Strikes Wall Street Ahead of Earnings", 8:04,
-   tagged earnings and deal). Tesla reports this week: a day trade is out
-   before the close, so it is not exposed to the report.
-3. **`/trader-entry`** watched TSLA bar by bar. At 10:12 it said waiting (the
+1. **`/trader-scanner`** at 10:15 AM IST: of the 218 F&O-list charts, 100 had
+   closed above their 15-minute opening range (97 with the default ₹50 price
+   floor). M&M is one: range 3,347.70 to 3,421.10, the 10:10 bar closed at
+   3,427.00, 0.17 % over the top.
+2. **`/trader-news`** reads M&M's NSE filings and Indian headlines. The check
+   the next morning led with M&M's move and the transcript of its Q2 analyst
+   meet, and flagged an acquisition filed on Nov 6: open the PDF before
+   trading it.
+3. **`/trader-entry`** watched M&M bar by bar. At 10:12 it said waiting (the
    10:10 bar was still forming). At 10:15 it said triggered: the first
-   5-minute close above the range, 364.18.
+   5-minute close above the range, 3,427.00.
 4. **`/trader-exit`** set the plan before the entry: stop at the range's
-   midpoint, 358.32, so 5.86 a share at risk; target one times that risk,
-   370.04; flat by 3:55 PM either way.
-5. **`/trader-timemachine`** replayed the rest of the day 10,000 times, each
-   5-minute candle drawn from TSLA's own candles at that time of day over the
-   previous 59 sessions (seed 19, so anyone can repeat it): target first
-   29.4 %, stop first 25.5 %, still open at the close 45.1 %. It also re-ran
-   the same rule on those 59 real sessions: it fired 33 times, 13 hit the
-   target, 15 the stop, 5 neither. Its verdict: close to a coin flip. That is
-   the point of looking before you risk a dollar.
-6. **`/trader-budget`** with a $5,000 account and a $50 max loss per trade:
-   50 / 5.86 = 8 shares ($2,913.44). If the stop fills at 358.32, the loss is
-   $46.88. It writes one bracket order: buy 8 TSLA, stop-loss 358.32,
-   take-profit 370.04.
-7. **`/trader-risk`** checks it against your limits: the max loss, the daily
-   loss limit, trades per day, reward to risk, the entry window, position
-   size and cash. PASS or BLOCK, with the reason.
-8. **`/trader-broker`** shows you the ticket in plain words. You type yes for
-   that exact order. Claude calls your brokerage connector (Alpaca's MCP
-   server, paper account by default), and Claude's own "Allow once / Deny"
-   card asks you one more time.
-9. **`/trader-alerts`** rings on the stop, the target and at 3:55 PM to
-   flatten whatever is still open.
+   midpoint, 3,384.40 (on M&M's 0.1 tick), so 42.60 a share at risk; target
+   one times that risk, 3,469.60; flat by 3:00 PM either way. M&M is on the
+   F&O list, so Zerodha's square-off for it is 3:12 PM.
+5. **`/trader-timemachine`** replayed the rest of the day to 3:00 PM 10,000
+   times from M&M's own 5-minute bars (seed 19): target first 16.1 %, stop
+   first 18.7 %, neither 65.2 %. The same rule on 58 real sessions fired 32
+   times: 12 target, 10 stop, 10 neither. Its verdict: close to a coin flip.
+   That is the point of looking before you risk a rupee.
+6. **`/trader-budget`** with a ₹2,00,000 budget and a ₹2,000 max loss per
+   trade: the stop goes in as an SL order with its limit at 3,367.40 (0.5 %
+   under the trigger), so the worst fill it allows is 59.60 a share. 32 shares
+   x 59.60 + ₹85.56 estimated charges = ₹1,992.76. It writes two Kite orders:
+   a LIMIT buy of 32 at 3,427.00, and the SL stop.
+7. **`/trader-risk`** checks the pair: NSE, MIS, LIMIT and SL, on the tick,
+   tagged; the max loss with charges; the daily loss and trades per day;
+   reward to risk; a last price under 15 minutes old with its source; and the
+   window. PASS. One more share and it is BLOCKed: ₹2,053.56 is over ₹2,000.
+8. **`/trader-broker`** shows one ticket for the pair in plain words with
+   the exact `place_order` JSON. In the dry run it records your yes and sends
+   nothing. Once the owner unlocks real orders: you type yes, Claude's "Allow
+   once / Deny" card asks again, the buy goes in, and the stop goes in after
+   the buy fills, for the filled quantity. A guard hook checks every order
+   call in code.
+9. **`/trader-alerts`** rings on the stop, the target and at 3:00 PM to close
+   whatever is still open.
 
 ## The tools
 
@@ -128,69 +134,81 @@ All standard-library Python. The data tools read public endpoints and are
 polite about it.
 
 ```bash
-python3 trader-scanner/scan.py universe                                # ~5,900 US stocks, Nasdaq Trader
-python3 trader-scanner/scan.py daily                                   # pre-market setups, whole universe
-python3 trader-scanner/scan.py orb --at 10:15                          # opening-range breakouts so far
-python3 trader-news/news.py --tickers TSLA --hours 12                  # headlines, 8-Ks, today's move
-python3 trader-entry/entry.py check TSLA --setup orb                   # waiting / triggered / expired
-python3 trader-entry/entry.py watch TSLA --every 30                    # bar by bar until it triggers
-python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # -> trader/plan.json
-python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
-python3 trader-budget/size.py --write                                  # -> trader/orders.json
-python3 trader-risk/check.py                                           # PASS / BLOCK per order
-python3 trader-broker/ticket.py show                                   # the tickets, READY or not
-python3 trader-alerts/alerts.py add --from-plan                        # stop, target, flat by close
-python3 trader-alerts/alerts.py check                                  # rings what hit, once
-python3 trader-analyst/facts.py TSLA                                   # quarters, growth, EPS
+python3 trader-scanner/scan.py universe                       # NSE equity + the F&O list -> trader/universe.txt
+python3 trader-scanner/scan.py daily                          # before the open: whole universe
+python3 trader-scanner/scan.py orb                            # opening-range breakouts so far (after 9:35 AM)
+python3 trader-news/news.py --symbols "M&M" SBIN --hours 12   # headlines and NSE filings
+python3 trader-entry/entry.py check "M&M" --write             # waiting / triggered / expired
+python3 trader-exit/exit.py plan --stop or-mid --target 1R --write   # -> trader/plan.json
+python3 trader-timemachine/timemachine.py run --write         # 10,000 replays + the history
+python3 trader-budget/size.py --write                         # -> trader/orders.json (the buy and its stop)
+python3 trader-risk/check.py                                  # PASS / BLOCK per order
+python3 trader-broker/ticket.py show                          # the tickets, READY or not
+python3 trader-alerts/alerts.py add --from-plan               # stop, target, flat by 3:00 PM
+python3 trader-alerts/alerts.py check                         # rings what hit, once
+python3 trader-analyst/facts.py "M&M"                         # quarters, growth, EPS, the newest NSE filing
 ```
+
+Quote `"M&M"` in a shell: `&` splits a command.
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-The tests run offline, on fixtures cut from real data: TSLA's 5-minute bars
-for the 60 days to October 19 2026, the 10:15 AM opening-range scan, Yahoo's
-TSLA headlines that morning and real XBRL facts. They reproduce every number in the example above.
+The tests run offline, on fixtures cut from real NSE data: M&M's 5-minute
+bars for 2026-11-11 and the 60 days before, the 10:15 AM scan of 218 F&O-list
+charts, NSE's lists and M&M's NSE filings. The headlines in them are made up
+(synthetic), so no news text is copied. They reproduce every number in the
+example above.
 
 ## Fine print
 
 **Not financial advice.** This is software that reads public data and does
 arithmetic. It does not know your situation and it cannot see the future.
-Most people who day trade lose money. You can lose money. Decide for
-yourself, and talk to a licensed professional if you need advice.
+Most people who day trade lose money: SEBI's study of FY23 found that 71 % of
+individual intraday traders in the equity cash segment made a net loss (SEBI
+press release, 24 July 2024). You can lose money. Decide for yourself, and
+talk to a SEBI-registered adviser if you need advice.
 
-**No trade goes through until you say yes.** Only `/trader-broker` can lead to
-an order, and only after `/trader-risk` passes that exact order and you type
-yes for it in the chat. Set your brokerage tool to "Needs approval" in Claude
-(Customize, Connectors, tool permissions), never "Always allow", so Claude's
-own "Allow once / Deny" card is a second check. No options, margin, short
-selling or leverage unless you turn them on.
+**No entry without your yes.** Only `/trader-broker` can lead to an order,
+and only after `/trader-risk` passes that exact order on the real clock and
+you type yes for it in the chat. `place_order` stays on "ask" so Claude's
+own "Allow once / Deny" card is a second check, and the guard hook blocks any
+order call this pack did not prepare. The one exception is the 3 pm close,
+which sells only this pack's own positions of the day, and only once its
+owner has proved it and recorded the gate. No options, margin or short
+selling: the pack is long only, intraday.
 
-**Paper first.** `"paper": true` is the default in `config.example.json`, and
-Alpaca's MCP server defaults to its paper account. Keys live in environment
-variables, never in the chat.
+**Dry run first.** `"dry_run": true` is the default. Real orders also need
+`b0_proven_on`, which only the owner writes, by hand, after the first two
+real orders worked. Keys live in your `.mcp.json`, never in the chat.
+
+**Zerodha's rules.** Orders through the API need a static IP whitelisted in
+your Kite Connect app, and a login in your browser each trading day. Zerodha
+squares off open MIS positions at 3:12 PM (F&O-list stocks) or 3:25 PM, for
+₹50 + GST an order. The charges this pack shows are an estimate of Zerodha's
+intraday charges; the square-off fee is not in them.
 
 **The Time Machine is a simulation, not a prediction.** It is built from the
 stock's own last 60 days of 5-minute bars. The future can do things those 60
-days never did: an earnings report, a halt, a headline. Treat its odds as a
-reality check, never as a promise.
+days never did: results, a circuit, a headline. Treat its odds as a reality
+check, never as a promise.
 
-**A stop is a plan, not a guarantee.** In a fast market or across a gap, a
-stop order can fill well past its price. The max loss shown is the loss at
-the stop price.
+**A stop is a plan, not a guarantee.** The stop is an SL order with a limit
+under its trigger. In a fast market it can fill worse than the trigger, or
+not at all if the price falls through its limit. The max loss shown is the
+loss at the stop's limit.
 
 **The data is free and unofficial.** Yahoo Finance's chart endpoint is not an
-official API: it can lag, change or rate-limit you. The scanner and the entry
-timer read 1-minute or 5-minute bars, not every tick. Check anything that
-matters against your broker before you act on it.
+official API: it can lag, change or rate-limit you. NSE's pages can refuse a
+request. Google News's feed is for personal reading in a feed reader, which
+is how the news skill uses it; publishing the pack for others is the owner's
+decision. The scanner and the entry timer read 1-minute or 5-minute bars, not
+every tick. Check anything that matters in Kite before you act on it.
 
-**Day-trading rules.** FINRA removed the $25,000 pattern-day-trader minimum
-on June 4, 2026 (Regulatory Notice 26-10), and brokers may phase the change
-in until October 20, 2027, so yours may still apply the old rule. If it does,
-set `"pdt_guard": true` and `/trader-risk` counts your day trades.
-
-**Taxes.** Day-trading gains are short-term gains, and frequent trading makes
-wash sales likely. Nothing here is tax advice.
+**Taxes.** Intraday equity trading is generally taxed in India as speculative
+business income, apart from capital gains, and losses from it can only be set
+off against speculative income. Nothing here is tax advice.
 
 ## Files
 
@@ -202,10 +220,12 @@ trader-exit/        SKILL.md, exit.py
 trader-timemachine/ SKILL.md, timemachine.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
+trader-broker/      SKILL.md, ticket.py, guard.py, closer.py, mcp.example.json, settings.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, facts.py, metrics.example.json
 tests/              unittest suite + offline fixtures
+PLAN_INDIA_ZERODHA.md   the move to NSE and Zerodha: findings, rulings, the B0 checks still open
 ```
 
-MIT. Made by [Jake Schincariol](https://opusjake.ai).
+MIT. Made by [Jake Schincariol](https://opusjake.ai); moved to NSE and Zerodha
+in this fork.

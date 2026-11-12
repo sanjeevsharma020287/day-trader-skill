@@ -16,8 +16,8 @@ CLOCK_TOOLS = ["trader-alerts/alerts.py", "trader-broker/ticket.py", "trader-bud
                "trader-scanner/scan.py", "trader-timemachine/timemachine.py"]
 CLOCK_START = "# ==== india clock: shared, byte-identical in every tool (tests/test_repo.py checks) ===="
 CLOCK_END = "# ==== end india clock ===="
-ABOUT = ("10 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
-         "entry and exit, and replay every outcome before you risk a dollar.")
+ABOUT = ("10 Claude skills for day trading on NSE: scan thousands of charts, track breaking news, time every "
+         "entry and exit, and replay every outcome before you risk a rupee.")
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
               "trader-risk", "trader-broker", "trader-alerts"]
@@ -102,6 +102,29 @@ class Repo(unittest.TestCase):
             market = json.load(fh)
         self.assertEqual(market["name"], "day-trader-skill")
         self.assertEqual(market["plugins"][0]["name"], "day-trader-skill")
+
+    def test_no_us_source_or_dollar_is_left(self):
+        # B7: nothing shipped still points at the US pack: no US broker, exchange, regulator, data source, reel or
+        # dollar amount. The old US config keys stay only where risk and budget refuse them by name; the plan
+        # and the tests are not shipped text.
+        us = re.compile(r"Alpaca|Nasdaq|EDGAR|NYSE|New York|FINRA|Interactive Brokers|IBKR|place_stock_order|"
+                        r"Pelosi|House Clerk|Tesla|TSLA|Stooq|\bET\b|risk a dollar|\$\s?\d")
+        for path in every_text_file():
+            rel = os.path.relpath(path, ROOT)
+            if rel.startswith("tests" + os.sep) or rel.startswith("PLAN_"):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    if path.endswith(".py") and re.search(r"\bas ET$|\bET\.\w", line.rstrip()):
+                        continue                       # the XML parser's name, not Eastern Time
+                    self.assertIsNone(us.search(line), "%s:%d: %s" % (rel, n, line.strip()))
+        for path in every_text_file():
+            rel = os.path.relpath(path, ROOT)
+            if rel.startswith(os.path.join("tests", "fixtures")):
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+                for word in ("TSLA", "Nasdaq", "sec.gov", "clerk.house", "stooq"):
+                    self.assertNotIn(word, text, rel)
 
     def test_readme_carries_the_reel_copy(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
