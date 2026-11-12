@@ -1,9 +1,9 @@
 {
   "rules": [
     {"id": "opening-bell", "type": "opening_bell"},
-    {"id": "tsla-plan-stop", "symbol": "TSLA", "type": "stop", "price": 358.32, "note": "plan stop: opening-range midpoint", "date": "2026-10-19"},
-    {"id": "tsla-plan-target", "symbol": "TSLA", "type": "target", "price": 370.04, "note": "plan target: 1R (one times the risk)", "date": "2026-10-19"},
-    {"id": "tsla-flat-by", "symbol": "TSLA", "type": "time", "at": "15:55", "label": "flat by close", "before_close": true, "date": "2026-10-19"},
-    {"id": "tsla-move-3", "symbol": "TSLA", "type": "pct_move", "pct": 3}
+    {"id": "m&m-plan-stop", "symbol": "M&M", "type": "stop", "price": 3384.4, "note": "plan stop: opening-range midpoint", "date": "2026-11-11"},
+    {"id": "m&m-plan-target", "symbol": "M&M", "type": "target", "price": 3469.6, "note": "plan target: 1R (one times the risk)", "date": "2026-11-11"},
+    {"id": "m&m-flat-by", "symbol": "M&M", "type": "time", "at": "15:00", "label": "flat by 3:00 PM", "date": "2026-11-11"},
+    {"id": "m&m-move-3", "symbol": "M&M", "type": "pct_move", "pct": 3}
   ]
 }

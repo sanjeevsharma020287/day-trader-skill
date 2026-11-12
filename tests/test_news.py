@@ -1,16 +1,28 @@
+"""trader-news tests. Fixtures in tests/fixtures/trader-news/:
+
+nse-ann-M&M.json, nse-ann-SBIN.json  NSE corporate announcements (api/corporate-announcements,
+                                    5 to 12 Nov 2026), real public filings, read 2026-11-12.
+chart-M&M.json, chart-SBIN.json    Yahoo range=1d quotes (copies of trader-alerts' fixtures).
+gnews-M&M.xml, gnews-SBIN.xml      SYNTHETIC feeds in the shape of Google News RSS for India:
+                                    the headlines are made up (the real feed is for personal reading).
+"""
+
 import datetime
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from _load import FIX, load
+from _load import FIX, ROOT, load
 
 news = load("trader-news", "news")
 DIR = os.path.join(FIX, "trader-news")
-NOW = "2026-10-14T00:00:00+00:00"
+NOW = "2026-11-12T09:00"          # India time
+UTC = datetime.timezone.utc
+R = "₹"
 
 
 def raw(name):
@@ -26,206 +38,193 @@ def run(args):
 
 
 class Feeds(unittest.TestCase):
-    def test_yahoo_rss(self):
-        items = news.parse_rss(raw("yahoo-AAPL.xml"), "AAPL")
+    def test_google_news_rss(self):
+        items = news.parse_gnews(raw("gnews-M&M.xml"), "M&M")
         self.assertEqual(len(items), 6)
         first = items[0]
-        self.assertEqual(first["title"], "Apple may have a way to dominate the smart home space")
-        self.assertEqual(first["time"], datetime.datetime(2026, 10, 13, 19, 46, 52,
-                                                          tzinfo=datetime.timezone.utc))
-        self.assertTrue(first["link"].startswith("https://finance.yahoo.com/"))
-        self.assertTrue(first["id"].startswith("rss:"))
+        self.assertEqual(first["title"], "Example: Mahindra & Mahindra shares rise after Q2 results beat estimates")
+        self.assertEqual(first["source"], "Example Business Daily")      # the " - Publisher" tail moved here
+        self.assertEqual(first["time"], datetime.datetime(2026, 11, 11, 5, 10, tzinfo=UTC))
+        self.assertEqual(first["id"], "gn:SYN-A1")
+        self.assertIsNone(items[5]["time"])                              # an empty pubDate
 
-    def test_sec_atom_8k(self):
-        items = news.parse_sec_atom(raw("sec-8-K-0000320193.xml"), "AAPL")
-        self.assertEqual([i["form"] for i in items], ["8-K/A", "8-K", "8-K"])
-        earn = items[1]
-        self.assertEqual(earn["items"], ["2.02", "9.01"])
-        self.assertTrue(earn["important"])
-        self.assertEqual(earn["title"], "Apple Inc. filed a 8-K: earnings results")
-        self.assertEqual(earn["id"], "sec:0000320193-26-000018")
-        self.assertIn("000032019326000018", earn["link"])
-        # 16:30:28 New York time is 20:30:28 UTC
-        self.assertEqual(earn["time"].isoformat(), "2026-07-30T20:30:28+00:00")
-        self.assertEqual(items[0]["title"], "Apple Inc. filed a 8-K/A: director or officer change")
+    def test_nse_announcements(self):
+        items = news.parse_nse(raw("nse-ann-M&M.json"), "M&M")
+        self.assertEqual(len(items), 16)
+        top = items[0]
+        self.assertEqual(top["title"], "Analysts/Institutional Investor Meet/Con. Call Updates: Mahindra & Mahindra "
+                                       "Limited has informed the Exchange about Transcript of M&M Analyst Meet Q2F27")
+        self.assertEqual(top["id"], "nse:106855618")
+        self.assertEqual(top["kind"], "filing")
+        self.assertTrue(top["link"].startswith("https://nsearchives.nseindia.com/corporate/"))
+        # NSE's 11-Nov-2026 18:59:05 is India time: 13:29:05 UTC
+        self.assertEqual(top["time"], datetime.datetime(2026, 11, 11, 13, 29, 5, tzinfo=UTC))
+        cats = {i["category"]: i["important"] for i in items}
+        self.assertTrue(cats["Acquisition"])
+        self.assertTrue(cats["Change in Management"])
+        self.assertTrue(cats["Cessation"])
+        self.assertFalse(cats["Copy of Newspaper Publication"])
+        self.assertFalse(cats["Investor Presentation"])
+
+    def test_nse_refusals_are_plain_errors(self):
+        with self.assertRaises(news.NewsError) as cm:
+            news.parse_nse(b"<html>Access Denied</html>", "M&M")
+        self.assertIn("NSE may have refused", str(cm.exception))
+        self.assertEqual(news.parse_nse(b'{"data": []}', "M&M"), [])
+        with self.assertRaises(news.NewsError):
+            news.parse_nse(b'"nope"', "M&M")
 
     def test_times(self):
-        self.assertEqual(news.parse_time("Tue, 13 Oct 2026 20:02:03 +0000").hour, 20)
-        self.assertEqual(news.parse_time("2026-09-01T16:30:35-04:00").hour, 20)
+        self.assertEqual(news.parse_time("Wed, 11 Nov 2026 05:10:00 GMT").hour, 5)
+        self.assertEqual(news.parse_time("2026-11-12T09:00").hour, 3)    # no offset: India time
+        self.assertEqual(news.parse_time("2026-11-12T03:30:00Z").minute, 30)
         self.assertIsNone(news.parse_time("soon"))
+        self.assertEqual(news.nse_time("05-Nov-2026 13:04:12"), datetime.datetime(2026, 11, 5, 7, 34, 12, tzinfo=UTC))
+        self.assertIsNone(news.nse_time("yesterday"))
 
-    def test_yahoo_symbols(self):
-        self.assertEqual(news.yahoo_symbol("BRK.B"), "BRK-B")
+    def test_urls(self):
+        self.assertEqual(news.yahoo_symbol("m&m"), "M%26M.NS")
+        self.assertEqual(news.gnews_url("M&M", "Mahindra & Mahindra Limited"),
+                         "https://news.google.com/rss/search?q=%22Mahindra%20%26%20Mahindra%22&hl=en-IN&gl=IN&ceid=IN:en")
+        self.assertEqual(news.gnews_url("XYZ"),
+                         "https://news.google.com/rss/search?q=%22XYZ%22%20NSE&hl=en-IN&gl=IN&ceid=IN:en")
+        self.assertEqual(news.nse_url("M&M", datetime.datetime(2026, 11, 12, 3, 30)),
+                         "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol=M%26M"
+                         "&from_date=05-11-2026&to_date=12-11-2026")
+        self.assertEqual(news.short_name("State Bank of India"), "State Bank of India")
+        self.assertEqual(news.short_name("Bajaj Auto Ltd."), "Bajaj Auto")
 
 
 class Tagging(unittest.TestCase):
-    def test_touches_and_tags(self):
-        items = news.parse_rss(raw("yahoo-KO.xml"), "KO")
-        watch = {"KO": "Coca-Cola", "CVX": "Chevron", "AAPL": "Apple"}
-        news.tag(items, watch)
-        by = {i["title"][:20]: i for i in items}
-        chevron = by["Coca-Cola or Chevron"]
-        self.assertEqual(chevron["touches"], ["CVX", "KO"])
-        self.assertIn("capital", chevron["tags"])  # dividend
-        self.assertEqual(by["Is Coca-Cola (KO) St"]["touches"], ["KO"])
+    def items(self):
+        return (news.parse_gnews(raw("gnews-M&M.xml"), "M&M") + news.parse_gnews(raw("gnews-SBIN.xml"), "SBIN")
+                + news.parse_nse(raw("nse-ann-M&M.json"), "M&M") + news.parse_nse(raw("nse-ann-SBIN.json"), "SBIN"))
 
-    def test_earnings_filings_are_tagged(self):
-        items = news.tag(news.parse_sec_atom(raw("sec-8-K-0000021344.xml"), "KO"), {"KO": None})
-        self.assertEqual(items[0]["tags"][0], "earnings")
-        self.assertFalse(items[1]["important"])  # 8.01 other events
+    def test_touches_and_tags(self):
+        watch = {"M&M": "Mahindra & Mahindra Limited", "SBIN": "State Bank of India"}
+        items = news.tag(self.items(), watch)
+        by = {i["id"]: i for i in items}
+        self.assertEqual(by["gn:SYN-A3"]["touches"], ["M&M", "SBIN"])   # "(NSE: SBIN)" in an M&M story
+        self.assertEqual(by["gn:SYN-A1"]["tags"], ["results"])
+        self.assertEqual(by["gn:SYN-A2"]["tags"], ["analyst"])
+        self.assertEqual(by["gn:SYN-B1"]["tags"], ["rating"])
+        self.assertEqual(by["gn:SYN-A5"]["tags"], ["macro"])
+        self.assertEqual(by["nse:106855618"]["tags"], ["results"])      # "Q2F27"
 
     def test_dedupe_merges_the_same_story(self):
-        a = news.parse_rss(raw("yahoo-AAPL.xml"), "AAPL")
-        b = news.parse_rss(raw("yahoo-AAPL.xml"), "GOOGL")
-        items = news.dedupe(news.tag(a + b, {"AAPL": None, "GOOGL": None}))
-        self.assertEqual(len(items), 6)
-        self.assertEqual(items[0]["touches"], ["AAPL", "GOOGL"])
+        watch = {"M&M": None, "SBIN": None}
+        items = news.dedupe(news.tag(self.items(), watch))
+        ids = [i["id"] for i in items]
+        self.assertNotIn("gn:SYN-A1-COPY", ids)       # the same title the same day
+        self.assertNotIn("gn:SYN-A3-SBIN", ids)       # the same link from the other feed
+        a3 = [i for i in items if i["id"] == "gn:SYN-A3"][0]
+        self.assertEqual(a3["touches"], ["M&M", "SBIN"])
+        sbin = [i for i in items if i["symbol"] == "SBIN" and i["kind"] == "filing"]
+        self.assertEqual(len(sbin), 4)                # two 19:00:41 filings, same wording, two different PDFs
+        self.assertEqual(len(items), 6 - 1 + 2 - 1 + 16 + 4)
+        # M&M filed three documents with the same wording on Nov 5 (outcome of the board meeting): all stay
+        board = [i for i in items if i["kind"] == "filing" and i["category"] == "Outcome of Board Meeting"]
+        self.assertEqual(len(board), 3)                # three PDFs, 12:57 to 13:02
 
 
-class Check(unittest.TestCase):
+class Cli(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.state = os.path.join(self.tmp.name, "state", "news.json")
-        self.base = ["--offline", DIR, "--state", self.state, "--now", NOW,
-                     "--portfolio", os.path.join(self.tmp.name, "none.json"),
-                     "--watchlist", os.path.join(self.tmp.name, "none.json"),
-                     "--plan", os.path.join(self.tmp.name, "none.json")]
+        self.d = tempfile.mkdtemp()
+        self.state = os.path.join(self.d, "news.json")
 
     def tearDown(self):
-        self.tmp.cleanup()
+        shutil.rmtree(self.d)
 
-    def test_new_items_once_newest_first(self):
-        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "24", "--json"] + self.base)
+    def check(self, *extra):
+        return run(["--symbols", "M&M", "SBIN", "--offline", DIR, "--now", NOW, "--state", self.state] + list(extra))
+
+    def test_the_reel_morning(self):
+        code, text, err = self.check()
         self.assertEqual(code, 0, err)
-        data = json.loads(out)
-        times = [i["time"] for i in data["items"]]
-        self.assertEqual(times, sorted(times, reverse=True))
-        self.assertEqual(len(data["items"]), 10)  # 6 Apple + 4 Coca-Cola headlines, filings are older
-        code, out, _ = run(["--tickers", "AAPL", "KO", "--hours", "24"] + self.base)
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "M&M        %s3,465.00 +5.30%% vs yesterday's close %s3,290.60 at 15:29 IST  MOVING"
+                         % (R, R))
+        self.assertTrue(lines[1].startswith("SBIN       %s1,061.20 +1.84%%" % R))
+        self.assertIn("  2026-11-11 18:59 IST  M&M          NSE filing", text)
+        self.assertIn("2026-11-11 15:35 IST  M&M,SBIN     Example Wire", text)
+        self.assertNotIn("2026-11-06", text)                             # outside 48 hours
+        self.assertIn("time unknown", text)
+        self.assertIn("Checked 2026-11-12 09:00 IST", text)
+        self.assertIn("Not financial advice", text)
+        # the second check shows nothing new
+        code, text, _ = self.check()
         self.assertEqual(code, 1)
-        self.assertIn("Nothing new.", out)
+        self.assertIn("Nothing new.", text)
 
-    def test_filings_show_in_a_wider_window(self):
-        code, out, err = run(["--tickers", "AAPL", "--hours", "2400"] + self.base)
-        self.assertEqual(code, 0, err)
-        self.assertIn("! 2026-07-30 16:30 ET  AAPL", out)  # 20:30 UTC, New York time
-        self.assertIn("earnings results", out)
-        self.assertIn("Not financial advice", out)
-        self.assertNotIn(chr(0x2014), out)
+    def test_important_filings_are_marked(self):
+        code, text, _ = self.check("--hours", "168", "--no-moves")
+        acq = [l for l in text.splitlines() if "Acquisition: Mahindra" in l]
+        self.assertEqual(len(acq), 1)
+        self.assertTrue(acq[0].startswith("! 2026-11-06 15:36 IST"), acq[0])
+        news_paper = [l for l in text.splitlines() if "Copy of Newspaper Publication" in l]
+        self.assertTrue(all(l.startswith("  ") for l in news_paper))
 
-    def test_tickers_from_watchlist_and_plan(self):
-        wl = os.path.join(self.tmp.name, "watchlist.json")
+    def test_headlines_only(self):
+        code, text, _ = self.check("--no-nse", "--no-moves")
+        self.assertNotIn("NSE filing", text)
+        self.assertIn("Example Wire", text)
+
+    def test_symbols_from_watchlist_plan_and_names_from_the_universe(self):
+        wl = os.path.join(self.d, "watchlist.json")
         with open(wl, "w") as fh:
-            json.dump({"created_by": "trader-scanner", "hits": [{"symbol": "KO", "setups": ["orb"]}]}, fh)
-        plan = os.path.join(self.tmp.name, "plan.json")
+            json.dump({"hits": [{"symbol": "SBIN"}]}, fh)
+        plan = os.path.join(self.d, "plan.json")
         with open(plan, "w") as fh:
-            json.dump({"created_by": "trader-exit", "symbol": "AAPL"}, fh)
-        self.assertEqual(sorted(news.watch_from_files("/nonexistent.json", wl, plan)), ["AAPL", "KO"])
-        args = list(self.base)
-        args[args.index("--watchlist") + 1] = wl
-        code, out, err = run(["--json", "--dry-run", "--hours", "24"] + args)
-        self.assertEqual(code, 0, err)
-        tickers = {t for i in json.loads(out)["items"] for t in i["touches"]}
-        self.assertEqual(tickers, {"KO"})
-        self.assertFalse(os.path.exists(self.state))
+            json.dump({"symbol": "M&M"}, fh)
+        uni = os.path.join(self.d, "universe.txt")
+        with open(uni, "w", encoding="utf-8") as fh:
+            fh.write("M&M|Mahindra & Mahindra Limited|0.1|FO\nSBIN|State Bank of India|0.05|FO\n")
+        code, text, _ = run(["--watchlist", wl, "--plan", plan, "--portfolio", os.path.join(self.d, "none"),
+                             "--universe", uni, "--offline", DIR, "--now", NOW, "--state", self.state, "--json"])
+        self.assertEqual(code, 0)
+        doc = json.loads(text)
+        self.assertEqual(sorted(m["symbol"] for m in doc["moves"]), ["M&M", "SBIN"])
+        self.assertEqual(news.watch_from_files(os.path.join(self.d, "none"), wl, plan), {"SBIN": None, "M&M": None})
+        a1 = [i for i in doc["items"] if i["id"] == "gn:SYN-A1"][0]
+        self.assertEqual(a1["touches"], ["M&M"])
 
-    def test_no_tickers_is_an_error(self):
-        code, _, err = run(self.base)
+    def test_no_symbols_is_an_error(self):
+        code, _, err = run(["--watchlist", os.path.join(self.d, "x"), "--plan", os.path.join(self.d, "x"),
+                            "--portfolio", os.path.join(self.d, "x"), "--offline", DIR])
         self.assertEqual(code, 2)
-        self.assertIn("no tickers", err)
-
-    def test_sec_needs_a_user_agent(self):
-        old = os.environ.pop("SEC_USER_AGENT", None)
-        try:
-            self.assertIsNone(news.sec_user_agent(None, "/nonexistent.json"))
-            self.assertIsNone(news.sec_user_agent("Your Name you@example.com"))
-            self.assertEqual(news.sec_user_agent("Ada ada@example.org"), "Ada ada@example.org")
-            with self.assertRaises(news.NewsError):
-                news.Fetcher(None).get("https://www.sec.gov/x", "x", sec=True)
-        finally:
-            if old is not None:
-                os.environ["SEC_USER_AGENT"] = old
-
-    def test_the_reel_tsla_morning(self):
-        # The reel's real feed: Yahoo Finance headlines for TSLA, Monday Oct 19 2026, checked at 10:15 AM ET
-        code, out, err = run(["--tickers", "TSLA", "--hours", "6", "--no-sec", "--no-moves",
-                              "--now", "2026-10-19T10:15:00-04:00"] + self.base[:4])
-        self.assertEqual(code, 0, err)
-        self.assertIn("2026-10-19 08:04 ET  TSLA", out)
-        self.assertNotIn("10:32 ET", out)  # published after the pinned 10:15 clock
-        self.assertIn("Tesla-SpaceX Merger Mania Strikes Wall Street Ahead of Earnings", out)
-        merger = [l for l in out.splitlines() if "Merger Mania" in l]
-        tags = out.splitlines()[out.splitlines().index(merger[0]) + 1]
-        self.assertIn("earnings", tags)
-        self.assertIn("deal", tags)
-        self.assertIn("Checked 2026-10-19 10:15 ET", out)
-        self.assertEqual(len([l for l in out.splitlines() if l.startswith("  2026-10-19")]), 16)  # 18 in the feed, 2 after 10:15
-        # the price line, from the chart fetched at 10:52
-        code, out, err = run(["--tickers", "TSLA", "--hours", "6", "--no-sec", "--dry-run",
-                              "--now", "2026-10-19T10:52:00-04:00"] + self.base[:4])
-        self.assertRegex(out, r"TSLA\s+366\.4[78] \+3\.31% vs yesterday's close 354\.72 at 10:52 ET  MOVING")
-
-    def test_moves(self):
-        m = news.parse_chart(raw("chart-TSLA.json"), "TSLA")
-        self.assertEqual(m["prev_close"], 354.72)
-        self.assertEqual(m["pct"], 3.31)
-        self.assertEqual(news.to_eastern(m["time"]).strftime("%H:%M"), "10:52")
-        quiet = dict(m, pct=1.2)
-        self.assertNotIn("MOVING", news.render_moves([quiet])[0])
-        self.assertIn("MOVING", news.render_moves([quiet], move_pct=1.0)[0])
-        with self.assertRaises(news.NewsError):
-            news.parse_chart(b'{"chart": {"result": null}}', "ZZZZ")
-        # no chart file offline: no move line, no error note
-        code, out, _ = run(["--tickers", "KO", "--hours", "24", "--dry-run"] + self.base)
-        self.assertNotIn("vs yesterday's close", out)
-        self.assertNotIn("note:", out)
-
-    def test_new_york_time_follows_daylight_saving(self):
-        utc = datetime.datetime(2026, 1, 15, 15, 0, tzinfo=datetime.timezone.utc)
-        self.assertEqual(news.to_eastern(utc).hour, 10)  # EST, UTC-5
-        utc = datetime.datetime(2026, 10, 19, 14, 15, tzinfo=datetime.timezone.utc)
-        self.assertEqual(news.to_eastern(utc).hour, 10)  # EDT, UTC-4
-        utc = datetime.datetime(2026, 11, 1, 6, 30)       # 1:30 EST, just after the switch back
-        self.assertEqual(news.to_eastern(utc).hour, 1)
-
-    def test_day_trading_tags(self):
-        items = [{"id": "x", "source": "Yahoo Finance", "kind": "headline", "ticker": "TSLA",
-                  "title": "Trading halted in XYZ after FDA approval; futures rise before CPI",
-                  "summary": "", "link": "", "time": None}]
-        tags = news.tag(items, {"TSLA": None})[0]["tags"]
-        for t in ("halt", "regulatory", "macro"):
-            self.assertIn(t, tags)
+        self.assertIn("no symbols", err)
 
     def test_a_short_window_hides_nothing_else(self):
-        # one --hours 3 run must not mark the rest of the last 24 hours as seen
-        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "3", "--json", "--no-moves"] + self.base)
-        self.assertEqual(code, 0, err)
-        self.assertEqual(len(json.loads(out)["items"]), 1)
-        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "24", "--json", "--no-moves"] + self.base)
-        self.assertEqual(code, 0, err)
-        items = json.loads(out)["items"]
-        self.assertEqual(len(items), 9)
-        self.assertTrue(all(i["new"] for i in items))
+        code, text, _ = self.check("--hours", "15", "--no-moves")
+        self.assertIn("18:59 IST", text)
+        self.assertNotIn("15:35 IST", text)
+        code, text, _ = self.check("--no-moves")
+        self.assertIn("15:35 IST", text)                                # not remembered by the short check
 
-    def test_a_bad_now_or_file_is_an_error_not_a_crash(self):
-        code, out, err = run(["--tickers", "AAPL", "--offline", DIR, "--state", self.state, "--now", "soon"])
+    def test_a_bad_now_or_a_missing_file_is_an_error_not_a_crash(self):
+        code, _, err = self.check("--now", "soon")
         self.assertEqual(code, 2)
-        self.assertIn("news: --now wants an ISO time", err)
-        os.makedirs(os.path.dirname(self.state))
-        with open(self.state, "w") as fh:
-            fh.write('{"seen": ')
-        code, out, err = run(["--tickers", "AAPL", "--no-moves"] + self.base)
-        self.assertEqual(code, 2)
-        self.assertIn("news: %s is not valid JSON" % self.state, err)
-        with open(self.state) as fh:
-            self.assertEqual(fh.read(), '{"seen": ')  # left as it was
+        self.assertIn("--now wants", err)
+        code, text, _ = run(["--symbols", "TCS", "--offline", DIR, "--now", NOW, "--state", self.state])
+        self.assertEqual(code, 1)
+        self.assertIn("note: headlines for TCS: offline: no file", text)
+        self.assertIn("note: NSE announcements for TCS", text)
 
     def test_state_forgets_after_30_days(self):
-        state = {"seen": {"old": "2026-08-01T00:00:00+00:00"}}
-        now = news.parse_time(NOW)
-        news.remember([], state, now)
-        self.assertNotIn("old", state["seen"])
-        self.assertEqual(state["last_check"], now.isoformat())
+        state = {"seen": {"old": "2026-09-01T00:00:00+00:00", "new": "2026-11-10T00:00:00+00:00"}}
+        news.remember([], state, datetime.datetime(2026, 11, 12, tzinfo=UTC))
+        self.assertEqual(sorted(state["seen"]), ["new"])
+
+
+class SkillDoc(unittest.TestCase):
+    def test_skill_md(self):
+        with open(os.path.join(ROOT, "trader-news", "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        low = " ".join(text.lower().split())
+        for must in ("nse", "google news", "corporate announcements", "india", "leads, not facts"):
+            self.assertIn(must, low)
+        for never in ("sec edgar", "8-k", "new york", "sec_user_agent", "\u2014"):
+            self.assertNotIn(never, low)
 
 
 if __name__ == "__main__":

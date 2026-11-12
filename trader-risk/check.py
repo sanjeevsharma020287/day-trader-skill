@@ -161,6 +161,13 @@ NSE_SPECIAL_SESSIONS = {  # the exchange opens, but this pack does not trade the
     "2026-11-08": "Muhurat trading (Sunday)",
 }
 NSE_CALENDAR_YEARS = (2026,)  # add a year only from NSE's own circular for it
+NSE_OPEN = _ist_dt.time(9, 15)        # normal market opens (pre-open 9:00 to 9:15)
+NSE_CLOSE = _ist_dt.time(15, 30)      # normal market closes
+FO_CLOSE = _ist_dt.time(15, 15)       # F&O-list stocks: continuous trading ends, the closing auction follows
+ENTRIES_FROM = _ist_dt.time(9, 30)    # the owner's rule: no order before 9:30
+ENTRIES_UNTIL = _ist_dt.time(15, 0)   # the owner's rule: no order at or after 15:00, and every position closed
+SQUARE_OFF = _ist_dt.time(15, 25)     # Zerodha's MIS auto square-off, equity
+SQUARE_OFF_FO = _ist_dt.time(15, 12)  # ... and for F&O-list stocks (closing auction session)
 
 
 def to_ist(utc):
@@ -168,6 +175,11 @@ def to_ist(utc):
     if utc.tzinfo is not None:
         utc = (utc - utc.utcoffset()).replace(tzinfo=None)
     return utc + IST_OFFSET
+
+
+def ts_to_ist(ts):
+    """Unix seconds -> naive India time. Never uses the machine's time zone."""
+    return _ist_dt.datetime(1970, 1, 1) + _ist_dt.timedelta(seconds=int(ts)) + IST_OFFSET
 
 
 def ist_to_utc(local):
@@ -189,7 +201,7 @@ def nse_trading_day(d):
     a weekend, a holiday or a special session is not a trading day for this pack."""
     if d.year not in NSE_CALENDAR_YEARS:
         return False, "no NSE holiday calendar for %d in this pack yet" % d.year
-    key = d.isoformat()
+    key = "%04d-%02d-%02d" % (d.year, d.month, d.day)  # a datetime's isoformat() would miss both tables
     if key in NSE_SPECIAL_SESSIONS:
         return False, "NSE special session (no entries): " + NSE_SPECIAL_SESSIONS[key]
     if d.weekday() >= 5:
@@ -197,6 +209,28 @@ def nse_trading_day(d):
     if key in NSE_HOLIDAYS:
         return False, "NSE holiday: " + NSE_HOLIDAYS[key]
     return True, ""
+
+
+def inr(x, places=2):
+    """Rupees with Indian grouping: 1234567.8 -> "\u20b912,34,567.80"."""
+    s = ("%%.%df" % places) % abs(x)
+    whole, _, frac = s.partition(".")
+    head, groups = whole[:-3], [whole[-3:]]
+    while head:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    sign = "-" if x < 0 and float(s) != 0 else ""
+    return sign + "\u20b9" + ",".join(groups) + ("." + frac if frac else "")
+
+
+def utf8_stdio():
+    """Print the rupee sign on a Windows pipe too (cp1252 cannot encode it)."""
+    import sys as _ist_sys
+    for stream in (_ist_sys.stdout, _ist_sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 # ==== end india clock ====
 
 

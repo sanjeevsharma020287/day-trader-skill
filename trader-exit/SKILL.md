@@ -5,13 +5,14 @@ description: >-
   when to get out. Reads the entry from trader-entry (or a price you give),
   puts the stop at the opening-range midpoint by default (or the range low,
   your price, a percent, or a multiple of the ATR), rounds it down to the
-  cent, and sets the target at 2R (or 1R, or your price). Refuses a stop at or
-  above the entry, a target at or below it, or a stop too tight to survive the
-  spread, and says why. Writes trader/plan.json for the Time Machine, the
-  Budget Manager and Price Alerts. Long side only. Use when the user says
-  "where's my stop", "set my stop and target", "plan the exit", "when do I get
-  out", "stop loss", "what's my R", "risk reward", or right after
-  /trader-entry triggers, before /trader-timemachine.
+  stock's NSE tick, and sets the target at 2R (or 1R, or your price). Flat by
+  3:00 PM India time at the latest. Refuses a stop at or above the entry, a
+  target at or below it, or a stop too tight to survive the spread, and says
+  why. Writes trader/plan.json for the Time Machine, the Budget Manager and
+  Price Alerts. Long side only. Use when the user says "where's my stop",
+  "set my stop and target", "plan the exit", "when do I get out", "stop
+  loss", "what's my R", "risk reward", or right after /trader-entry
+  triggers, before /trader-timemachine.
 argument-hint: "[--stop or-mid|or-low|price:X|pct:X|atr:K] [--target 2R|1R|price:X]"
 ---
 
@@ -30,22 +31,25 @@ and a neat plan does not change that.
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan                          # trader/entry.json: midpoint stop, 2R target
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop or-mid --target 1R --write
 python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --stop atr:1.5           # needs the session's bars (Yahoo or --offline)
-python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol TSLA --entry 364.18 --or-high 362.18 --or-low 354.47
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol "M&M" --entry 3427 --or-high 3421.1 --or-low 3347.7
 python3 "${CLAUDE_SKILL_DIR}/exit.py" show                          # the current trader/plan.json
 ```
 
-Other flags: `--flat-by 15:55`, `--json`, `--now "2026-10-19 10:15"` (New
-York time), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
-level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
+Other flags: `--flat-by 14:45` (15:00 or earlier), `--tick 0.05` (when the
+stock is not in `trader/universe.txt`), `--universe PATH`, `--json`, `--now
+"2026-11-11 10:15"` (India time), `--entry PRICE` with a waiting entry.json
+to plan ahead, `--setup level`, `--offline FILE` (a saved Yahoo chart JSON
+for an ATR stop).
 
 ## What it reads and writes
 
 | file | what |
 | --- | --- |
 | `trader/entry.json` | the trigger from trader-entry: symbol, entry price, time, bar, opening range |
-| `trader/config.json` | `flat_by` (15:55) and `min_reward_risk` (1.0: a note here, trader-risk enforces it) |
+| `trader/universe.txt` | from `/trader-scanner` (`scan.py universe`): the stock's tick size and whether it is on the F&O list |
+| `trader/config.json` | `flat_by` (15:00, never later) and `min_reward_risk` (1.0: a note here, trader-risk enforces it) |
 | Yahoo chart API | only for an `atr:K` stop: the session's bars up to the entry bar, free and unofficial |
-| `trader/plan.json` | with `--write`: entry, stop and its rule, target and its R, risk a share, reward:risk, flat by. trader-timemachine, trader-budget and trader-alerts read it |
+| `trader/plan.json` | with `--write`: entry, stop and its rule, target and its R, risk a share, reward:risk, flat by, tick, F&O flag. trader-timemachine, trader-budget and trader-alerts read it |
 
 ## Stops and targets
 
@@ -59,16 +63,22 @@ level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 
 A level setup has no opening range to lean on, so it needs a stop you name.
 
-- **Rounding.** The stop rounds AWAY from the entry to the cent (down, for a
+- **The tick.** Every NSE stock trades in steps of its tick size: 0.01, 0.05,
+  0.1, 1 or more (Kite's instrument list says which). A price off the tick
+  is rejected by the exchange, so every price here lands on it. With no tick
+  known for the stock it refuses and says how to get one.
+- **Rounding.** The stop rounds AWAY from the entry to the tick (down, for a
   long). Risk = entry minus stop. Target = entry + R x risk, rounded half up
-  to the cent. `2R` by default; `1R`, `1.5R` or `price:X` also work.
+  to the tick. `2R` by default; `1R`, `1.5R` or `price:X` also work.
 - **Refused, with the reason.** A stop at or above the entry. A target at or
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
-  triggered (unless you give `--entry`). A short: v2 plans longs only.
-- **Flat by.** 15:55 by default (or `flat_by` in the config). Out by then,
-  win or lose, no overnight hold. On a 1:00 p.m. early close it moves up to
-  12:55. An entry at or after the flat-by time is refused.
+  triggered (unless you give `--entry`). A short: this pack plans longs only.
+- **Flat by.** 15:00 India time, the owner's rule: out by then, win or lose,
+  no overnight hold. `flat_by` in the config or `--flat-by` can only make it
+  earlier; a later time or a null is refused. An entry at or after the
+  flat-by time is refused. For an F&O-list stock Zerodha's own square-off is
+  3:12 PM, for the rest 3:25 PM; 15:00 comes before both.
 
 ## Steps
 
@@ -79,7 +89,7 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 3. Run `exit.py plan --write`. Read back the entry, the stop and its rule,
    the target and its rule, the risk a share, reward:risk and flat by.
 4. If it refuses, say the reason and the fix (a wider stop, a farther
-   target). Never loosen anything on your own.
+   target, `scan.py universe` for the tick). Never loosen anything on your own.
 5. Say once that the stop is a plan, not a guarantee.
 6. Hand off to `/trader-timemachine` to replay the plan, then `/trader-budget`
    to size it to the max loss per trade. Offer `/trader-alerts` for the stop,
@@ -88,22 +98,23 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 
 ## Example: the reel
 
-TSLA, Monday 2026-10-19. The entry is 364.18 at 10:15 AM (the 10:10 bar,
-bar 8) and the opening range is 354.47 to 362.18. `exit.py plan --stop
-or-mid --target 1R --write`:
+M&M, Wednesday 2026-11-11. The entry is 3,427.00 at 10:15 AM (the 10:10 bar,
+bar 11) and the opening range is 3,347.70 to 3,421.10. M&M ticks at 0.1 and
+is on the F&O list. `exit.py plan --stop or-mid --target 1R --write`:
 
 ```
-Exit plan: TSLA long, Mon 2026-10-19, opening-range breakout on 5-minute bars
-  Entry         $364.18 at 10:15 AM (bar 8)
-  Stop          $358.32  opening-range midpoint: ($362.18 + $354.47) / 2 = $358.325, rounded down
-  Target        $370.04  1R (one times the risk)
-  Risk a share  $5.86 (1.61% of the entry)
+Exit plan: M&M long, Wed 2026-11-11, opening-range breakout on 5-minute bars
+  Entry         ₹3,427.00 at 10:15 AM (bar 11)
+  Stop          ₹3,384.40  opening-range midpoint: (₹3,421.10 + ₹3,347.70) / 2 = 3384.4
+  Target        ₹3,469.60  1R (one times the risk)
+  Risk a share  ₹42.60 (1.24% of the entry)
   Reward:risk   1.0
-  Flat by       15:55 ET, win or lose: no overnight hold
+  Flat by       15:00 IST, win or lose: no overnight hold
+  Tick          0.1, F&O list (Zerodha squares off at 3:12 PM)
 ```
 
-The default 2R target would be 364.18 + 2 x 5.86 = 375.90. trader-budget then
-sizes it: a $50 max loss per trade buys floor(50 / 5.86) = 8 shares.
+The default 2R target would be 3,427.00 + 2 x 42.60 = ₹3,512.20.
+trader-budget then sizes it to the max loss per trade.
 
 ## Rules
 
@@ -113,7 +124,7 @@ sizes it: a $50 max loss per trade buys floor(50 / 5.86) = 8 shares.
   never prints a P&L or a return.
 - Nothing here promises winning trades or money. A 1R target is not a
   prediction that the price gets there.
-- Long side only. v2 plans longs only.
+- Long side only. This pack plans longs only.
 
 ## What it never does
 

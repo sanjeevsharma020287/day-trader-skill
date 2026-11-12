@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SYNTHETIC test feed in the shape of Google News RSS (hl=en-IN, gl=IN), written for trader-news's tests.
+     The headlines, links and publishers are made up; no real article is quoted. -->
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>"State Bank of India" - Google News</title><language>en-IN</language><description>SYNTHETIC test feed</description>
+<item><title>Example: Auto stocks gain; Mahindra and SBI among top Nifty movers (NSE: SBIN) - Example Wire</title><link>https://news.example.invalid/a3</link><guid isPermaLink="false">SYN-A3-SBIN</guid><pubDate>Wed, 11 Nov 2026 10:05:00 GMT</pubDate><description>synthetic</description><source url="https://wire.example.invalid">Example Wire</source></item>
+<item><title>Example: State Bank of India gets a credit rating reaffirmed by an example agency - Example Banking</title><link>https://news.example.invalid/b1</link><guid isPermaLink="false">SYN-B1</guid><pubDate>Tue, 10 Nov 2026 12:00:00 GMT</pubDate><description>synthetic</description><source url="https://banking.example.invalid">Example Banking</source></item>
+</channel></rss>

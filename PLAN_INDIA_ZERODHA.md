@@ -140,7 +140,7 @@ See §5.
 | Tick size | cents | Kite `instruments/NSE` dump (public) | Checked live (F10) |
 | Alerts' second price source | Stooq (Warsaw time) | **Dropped.** If the first source fails, Kite `get_ltp` through MCP is a Claude step, not a tool fetch | Proposal |
 | News headlines | Yahoo RSS (US) + SEC 8-K Atom | Google News RSS `hl=en-IN&gl=IN` per company, plus the NSE corporate-announcements JSON (`api/corporate-announcements?index=equities&symbol=`) | Both answered today. Yahoo `.NS` RSS came back **empty**, so it is dropped. |
-| Earnings facts | SEC XBRL companyfacts | NSE `api/corporates-financial-results?...&period=Quarterly` (130 rows for RELIANCE, each with an Ind-AS XBRL link) | Answered today. Unofficial, and NSE can rate-limit or demand cookies. |
+| Earnings facts | SEC XBRL companyfacts | **Changed in B6 (Fable's P6 ruling):** Yahoo `fundamentals-timeseries` for `SYMBOL.NS` (labelled unofficial), plus the newest results filing from NSE's corporate announcements, always linked | NSE `api/corporates-financial-results` answers, but its newest quarter is 31-Dec-2024 (checked 2026-11-12): results filed after NSE's 2025 move to integrated filing are not in it. The XBRL route is dropped. |
 
 ### Q5. US-only rules
 
@@ -482,6 +482,21 @@ B0 waits on the owner.
   * **P5:** desk checks of kite-mcp-server's source happen before B3, labelled
     "read from source", not "B0-proven". If `place_order` has no tag
     parameter, R12 is settled as order_id only.
+* **B6 analyst ruling (Fable, 2026-11-12, P6 approved):** numbers from Yahoo's
+  fundamentals time series, labelled unofficial; the newest NSE results filing
+  always linked; (C) drop and (D) integrated-filing XBRL rejected.
+  * **R19:** when NSE has a results filing for a later quarter than Yahoo's
+    newest, the report says so in its first lines.
+  * **R20:** periods are matched by date: YoY uses the same month-end a year
+    earlier; TTM needs four quarter ends three months apart; a gap prints as a
+    gap. Tested on M&M's real 2025-09-30 hole, with an index-matching mutant.
+  * **R21:** missing fields stay missing (a bank's gross and operating margins
+    are "-", never zero); basis "not stated by the source"; non-INR refused.
+  * **R22:** no numbers is a valid report (the filing linked, a clean exit);
+    `--metrics` carries the source, fetch time and gaps.
+  * Google News's terms (personal reading only) go into B6's Impact table and
+    the README sources line; publishing the pack for others is an owner
+    decision at B7.
 * B0 also settles the weak
   cites S2, S13, S17 and the F2 year, the price questions in §4.3 [R4], and
   the entry TTL [R1].

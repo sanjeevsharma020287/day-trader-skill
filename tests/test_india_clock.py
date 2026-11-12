@@ -84,6 +84,26 @@ class IndiaClock(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("Muhurat", why)
 
+    def test_a_datetime_is_checked_like_its_date(self):
+        # R11: a datetime's isoformat() carries the time and would miss both tables
+        for m in self.each():
+            self.assertEqual(m.nse_trading_day(DT(2026, 10, 20, 10, 0)), (False, "NSE holiday: Dussehra"))
+            self.assertEqual(m.nse_trading_day(DT(2026, 11, 8, 18, 15))[0], False)
+            self.assertIn("Muhurat", m.nse_trading_day(DT(2026, 11, 8, 18, 15))[1])
+            self.assertEqual(m.nse_trading_day(DT(2026, 11, 12, 9, 30)), (True, ""))
+
+    def test_the_session_constants_and_rupees(self):
+        for m in self.each():
+            self.assertEqual((m.NSE_OPEN, m.NSE_CLOSE, m.FO_CLOSE), (datetime.time(9, 15), datetime.time(15, 30),
+                                                                      datetime.time(15, 15)))
+            self.assertEqual((m.ENTRIES_FROM, m.ENTRIES_UNTIL), (datetime.time(9, 30), datetime.time(15, 0)))
+            self.assertEqual((m.SQUARE_OFF, m.SQUARE_OFF_FO), (datetime.time(15, 25), datetime.time(15, 12)))
+            self.assertEqual(m.ts_to_ist(1794368700), DT(2026, 11, 11, 9, 15))
+            self.assertEqual(m.inr(1234567.8), "₹12,34,567.80")
+            self.assertEqual(m.inr(-0.004), "₹0.00")
+            self.assertEqual(m.inr(-1234.5), "-₹1,234.50")
+            self.assertEqual(m.inr(100000000, 0), "₹10,00,00,000")
+
     def test_a_year_with_no_calendar_fails_closed(self):
         for m in self.each():
             self.assertEqual(m.NSE_CALENDAR_YEARS, (2026,))
