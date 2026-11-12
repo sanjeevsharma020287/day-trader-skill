@@ -15,6 +15,7 @@ check = load("trader-risk", "check")
 CFG_PATH = os.path.join(ROOT, "trader-budget", "config.example.json")
 ORDERS_PATH = os.path.join(FIX, "trader-risk", "orders-mm.json")
 TODAY = "2026-11-11"                                  # a Wednesday, an NSE trading day
+PAIR = "M&M-2026-11-11-101600"                         # the reel pair id from trader-budget
 R = "₹"
 
 
@@ -178,7 +179,8 @@ class Ready(Clocked):
         self.assertEqual((ready, label), (True, "READY: trader-risk PASS on the pair, waiting for your yes"))
         ready, label, _ = self.status(os_, 2)
         self.assertFalse(ready)
-        self.assertEqual(label, "the stop of order 1: it goes in after that entry fills (ticket.py stop --index 1)")
+        self.assertEqual(label, "the stop of order 1: it goes in after that entry fills (ticket.py stop --pair %s)"
+                         % PAIR)
 
     def test_a_blocked_or_missing_stop_leg_blocks_the_entry(self):
         os_ = orders()
@@ -316,9 +318,13 @@ class Flow(Clocked):
         self.assertEqual((rec["status"], rec["mode"]), ("dry_run", "dry_run"))
         code, out, _ = self.run_("show")
         self.assertIn("DONE: dry_run at 2026-11-11T10:17:00+05:30", out)
-        self.assertEqual(self.run_("stop", "--index", "1", "--filled-qty", "32")[0], 1)
+        self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "32")[0], 1)
         code, _, err = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
         self.assertIn("order 1 has no live yes recorded today", err)       # a dry run has nothing to record
+
+    def placed_entry(self, order_id="251111000000001"):
+        self.run_("approve", "--index", "1", "--reply", "yes")
+        return self.run_("result", "--index", "1", "--status", "placed", "--order-id", order_id)
 
     def test_live_flow_entry_then_stop_for_the_filled_quantity(self):
         code, out, _ = self.run_("approve", "--index", "1", "--reply", "yes, M&M")
@@ -326,52 +332,97 @@ class Flow(Clocked):
         self.assertIn("Recorded your yes for order 1 and its stop (order 2)", out)
         self.assertIn("Now call place_order with exactly:", out)
         self.assertIn("Never retry a failed call", out)
+        self.assertIn("ticket.py stop --pair %s --filled-qty Q" % PAIR, out)
         self.assertIn("The 3 pm close is not active", out)
         rec = self.read("state")["orders"][-1]
         self.assertEqual((rec["status"], rec["kind"], rec["max_loss"], rec["risk_check"], rec["symbol"],
                           rec["transaction_type"]), ("approved", "entry", 1992.76, "chk1", "M&M", "BUY"))
-        self.assertIn("APPROVED by you at", self.run_("show")[1])
+        self.assertEqual(rec["stop_leg"], orders()[1])                     # R38: the stop the yes covers
+        out = self.run_("show")[1]
+        self.assertIn("APPROVED by you at", out)
+        self.assertNotIn("UNPROTECTED", out)                               # not placed yet
+        code, _, err = self.run_("result", "--status", "placed", "--order-id", "x")
+        self.assertIn("say which: --index N (an entry or exit in orders.json) or --pair P (its stop)", err)
         # the stop cannot go before the entry is recorded as placed
-        code, _, err = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "32")
         self.assertEqual(code, 1)
-        self.assertIn("is not recorded as placed today", err)
+        self.assertIn("has no entry recorded as placed today", err)
         code, _, err = self.run_("result", "--index", "1", "--status", "placed")
         self.assertIn("placed needs --order-id", err)
         code, out, _ = self.run_("result", "--index", "1", "--status", "placed", "--order-id", "251111000000001")
         self.assertEqual(code, 0)
-        self.assertIn("UNPROTECTED: M&M x 32 bought with order 1 (Kite order_id 251111000000001) has no stop placed",
-                      out)
-        self.assertIn("UNPROTECTED", self.run_("show")[1])
+        self.assertIn("UNPROTECTED: M&M, entry order_id 251111000000001 (pair %s): stops cover 0 of 32; whatever has "
+                      "filled beyond that has no stop. When get_orders shows a fill: ticket.py stop --pair %s "
+                      "--filled-qty Q" % (PAIR, PAIR), out)
         for bad in ("33", "0", "20.5"):
-            self.assertEqual(self.run_("stop", "--index", "1", "--filled-qty", bad)[0], 1, bad)
-        self.assertEqual(self.run_("stop", "--index", "2", "--filled-qty", "20")[0], 1)    # the entry's number
-        code, out, _ = self.run_("stop", "--index", "1", "--filled-qty", "20")
+            self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", bad)[0], 1, bad)
+        self.assertEqual(self.run_("stop", "--pair", "OTHER", "--filled-qty", "20")[0], 1)
+        code, out, _ = self.run_("stop", "--pair", PAIR, "--filled-qty", "20")
         self.assertEqual(code, 0)
         self.assertIn('"quantity": 20,', out)
         self.assertIn('"trigger_price": 3384.4', out)
-        self.assertIn("covers only these 20 shares", out)
+        self.assertIn("Stops then cover 20 of 32", out)
         self.assertEqual(self.read("state")["orders"][-1]["status"], "stop_ready")
-        self.assertIn("UNPROTECTED", self.run_("show")[1])                 # prepared is not placed
-        code, out, _ = self.run_("result", "--index", "2", "--status", "placed", "--order-id", "251111000000002")
+        self.assertIn("stops cover 20 of 32", self.run_("show")[1])         # a prepared stop may be at the broker
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "12")
+        self.assertIn("has no result yet", err)                            # one prepared stop at a time
+        code, _, err = self.run_("result", "--index", "2", "--status", "placed", "--order-id", "x")
+        self.assertIn("order 2 is a stop: record its result with --pair %s" % PAIR, err)
+        code, out, _ = self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "251111000000002")
         self.assertEqual(code, 0)
+        self.assertIn("stops cover 20 of 32", self.run_("show")[1])         # R37: the 12 left still have no stop
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "13")
+        self.assertIn("stops cover 20 of 32, so 1 to 12", err)
+        self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "12")[0], 0)
+        self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "251111000000003")
         self.assertNotIn("UNPROTECTED", self.run_("show")[1])
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "1")
+        self.assertIn("stops already cover all 32 shares of pair %s" % PAIR, err)
+        code, _, err = self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "again")
+        self.assertIn("has no stop prepared (ticket.py stop) without a result today", err)
         placed = [r for r in self.read("state")["orders"] if r["status"] == "placed"]
-        self.assertEqual([(r["leg"], r["quantity"], r["order_id"]) for r in placed],
-                         [("entry", 32, "251111000000001"), ("stop", 20, "251111000000002")])
+        self.assertEqual([(r["leg"], r["quantity"], r["order_id"], r.get("stop_id")) for r in placed],
+                         [("entry", 32, "251111000000001", None),
+                          ("stop", 20, "251111000000002", PAIR + "/stop-1"),
+                          ("stop", 12, "251111000000003", PAIR + "/stop-2")])
+
+    def test_a_stop_that_did_not_go_in_covers_nothing(self):
+        self.placed_entry()
+        for status in ("failed", "denied", "unsent"):
+            self.assertEqual(self.run_("stop", "--pair", PAIR, "--filled-qty", "32")[0], 0, status)
+            self.run_("result", "--pair", PAIR, "--status", status)
+            self.assertIn("stops cover 0 of 32", self.run_("show")[1], status)
+
+    def test_the_stop_lives_in_the_log_not_in_orders_json(self):
+        # R38: flatten (or a new plan) replaces orders.json; the stop the yes covered is still there, unedited.
+        self.placed_entry()
+        doc = self.read("orders")
+        doc["orders"][1]["trigger_price"] = 3300.0                         # edited after the yes
+        self.write("orders", doc)
+        code, out, _ = self.run_("stop", "--pair", PAIR, "--filled-qty", "10")
+        self.assertIn('"trigger_price": 3384.4', out)
+        self.assertNotIn("3300", out)
+        self.run_("result", "--pair", PAIR, "--status", "placed", "--order-id", "S1")
+        self.write("orders", {"orders": [dict(orders()[0], tradingsymbol="SBIN", pair="SBIN-x", leg="exit",
+                                              transaction_type="SELL")]})
+        self.assertIn("UNPROTECTED: M&M, entry order_id 251111000000001 (pair %s): stops cover 10 of 32" % PAIR,
+                      self.run_("show")[1])
+        code, out, _ = self.run_("stop", "--pair", PAIR, "--filled-qty", "22")
+        self.assertEqual(code, 0)
+        self.assertIn('"quantity": 22,', out)
+        self.assertIn('"trigger_price": 3384.4', out)
 
     def test_a_real_position_keeps_its_stop_after_a_switch_to_dry_run(self):
-        self.run_("approve", "--index", "1", "--reply", "yes")
-        self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
+        self.placed_entry()
         self.write("config", cfg())                                       # the owner switches back to dry run
-        code, out, _ = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        code, out, _ = self.run_("stop", "--pair", PAIR, "--filled-qty", "32")
         self.assertEqual(code, 0)
         self.assertIn('"quantity": 32,', out)
 
     def test_the_stop_waits_for_the_exit_session(self):
-        self.run_("approve", "--index", "1", "--reply", "yes")
-        self.run_("result", "--index", "1", "--status", "placed", "--order-id", "1")
+        self.placed_entry()
         self.set_clock("2026-11-11 15:12")
-        code, _, err = self.run_("stop", "--index", "1", "--filled-qty", "32")
+        code, _, err = self.run_("stop", "--pair", PAIR, "--filled-qty", "32")
         self.assertEqual(code, 1)
         self.assertIn("the stop cannot go in now: outside the session for an exit (09:15 to 15:12", err)
 
@@ -501,8 +552,17 @@ class Positions(Clocked):
 
     def test_an_exit_cancels_the_stop_first(self):
         os_ = orders()
-        state = {"orders": [{"date": TODAY, "status": "placed", "leg": "stop", "symbol": "M&M", "order_id": "S9",
-                             "pair": os_[0]["pair"]}]}
+        def stop(sid, status, order_id=None, at="2026-11-11T10:40:00+05:30"):
+            r = {"date": TODAY, "at": at, "status": status, "leg": "stop", "symbol": "M&M", "pair": os_[0]["pair"],
+                 "stop_id": sid, "quantity": 10}
+            if order_id:
+                r["order_id"] = order_id
+            return r
+        # R37: two stops placed, a third prepared with no result, a fourth that failed
+        state = {"orders": [stop("p/stop-1", "stop_ready"), stop("p/stop-1", "placed", "S9"),
+                            stop("p/stop-2", "stop_ready"), stop("p/stop-2", "placed", "S10"),
+                            stop("p/stop-3", "stop_ready", at="2026-11-11T10:50:00+05:30"),
+                            stop("p/stop-4", "stop_ready"), stop("p/stop-4", "failed")]}
         with open(self.st, "w") as fh:
             json.dump(state, fh)
         self.fill("buy", "32")
@@ -521,8 +581,11 @@ class Positions(Clocked):
         code, out, err = self.run_("approve", "--index", "1", "--reply", "yes", "--orders", self.ords, "--config",
                                    self.cfgp, "--risk", rp, "--state", self.st)
         self.assertEqual(code, 0, err)
-        self.assertIn("First cancel the stop, so it cannot fire after this sell and open a short: cancel_order with "
-                      "variety regular, order_id S9. Then:", out)
+        self.assertIn("First cancel every stop this pack placed for M&M today, so none can fire after this sell and "
+                      "open a short: cancel_order with variety regular, order_id S9, then order_id S10.", out)
+        self.assertIn("A stop prepared at 2026-11-11T10:50:00+05:30 has no result recorded: look in get_orders for "
+                      "it, and cancel it too if it is there.", out)
+        self.assertIn("Then:" + chr(10) + "Now call place_order with exactly:", out)
         self.assertNotIn("The 3 pm close is not active", out)            # an exit, not an entry
 
 

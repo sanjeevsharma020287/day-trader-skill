@@ -29,7 +29,7 @@ work around the one moment that matters, your yes:
     python3 ticket.py show --index 1 --json   # one ticket as JSON
     python3 ticket.py approve --index 1 --reply "yes"
     python3 ticket.py result --index 1 --status placed --order-id 251111000123456
-    python3 ticket.py stop --index 1 --filled-qty 32
+    python3 ticket.py stop --pair M&M-2026-11-11-101600 --filled-qty 32
     python3 ticket.py fill --symbol M&M --side buy --qty 32 --price 3427
     python3 ticket.py flatten --symbol M&M --price 3460.5
     python3 ticket.py log
@@ -501,8 +501,8 @@ def status_of(orders, idx, risk, state, today, now):
     leg = leg_of(order)
     if leg == "stop":
         e, _ = entry_of(orders, idx)
-        return False, ("the stop of order %s: it goes in after that entry fills (ticket.py stop --index %s)"
-                       % (e or "?", e or "N")), None
+        return False, ("the stop of order %s: it goes in after that entry fills (ticket.py stop --pair %s)"
+                       % (e or "?", order.get("pair"))), None
     fp = fingerprint(order)
     rv, why = risk_verdict(risk, fp, today)
     if rv is None:
@@ -540,21 +540,45 @@ def status_of(orders, idx, risk, state, today, now):
     return True, "READY: trader-risk PASS%s, waiting for your yes" % (" on the pair" if stop is not None else ""), rv
 
 
-def unprotected(orders, state, today):
-    """Lines for entries placed today with no stop placed yet (R6): the position has no stop at the broker."""
+def placed_entries(state, today):
+    """[(pair, the entry's latest record)] for today's paired entries whose latest record is placed (R38: from
+    the log, not from orders.json, which flatten or a new plan replaces)."""
+    last, order = {}, []
+    for rec in state.get("orders", []):
+        if rec_day(rec) == today and rec.get("leg") == "entry" and rec.get("pair"):
+            if rec["pair"] not in last:
+                order.append(rec["pair"])
+            last[rec["pair"]] = rec
+    return [(p, last[p]) for p in order if last[p].get("status") == "placed"]
+
+
+def stop_groups(state, today):
+    """{stop_id: (its stop_ready record, its latest record)} for every stop prepared today, in order."""
+    out = {}
+    for rec in state.get("orders", []):
+        if rec_day(rec) == today and rec.get("leg") == "stop" and rec.get("stop_id"):
+            first = out[rec["stop_id"]][0] if rec["stop_id"] in out else rec
+            out[rec["stop_id"]] = (first, rec)
+    return out
+
+
+def covered(state, today, pair):
+    """R37: shares under a stop for this pair: stops placed, plus a stop prepared with no result yet (it may be at
+    the broker). A denied, failed or unsent stop covers nothing."""
+    return sum(int(last.get("quantity") or 0) for first, last in stop_groups(state, today).values()
+               if first.get("pair") == pair and last.get("status") in ("placed", "stop_ready"))
+
+
+def unprotected(state, today):
+    """R6, R37: a line for each entry placed today whose stops cover less than its quantity."""
     out = []
-    for i, o in enumerate(orders, 1):
-        if leg_of(o) != "entry" or not o.get("pair"):
+    for pair, e in placed_entries(state, today):
+        want, have = int(e.get("quantity") or 0), covered(state, today, pair)
+        if have >= want:
             continue
-        e = latest(state, today, pair=o["pair"], leg="entry")
-        if not e or e.get("status") != "placed":
-            continue
-        s = latest(state, today, pair=o["pair"], leg="stop")
-        if s and s.get("status") == "placed":
-            continue
-        out.append("UNPROTECTED: %s x %s bought with order %d (Kite order_id %s) has no stop placed. When "
-                   "get_orders shows it COMPLETE (or part filled): ticket.py stop --index %d --filled-qty Q"
-                   % (o.get("tradingsymbol"), o.get("quantity"), i, e.get("order_id") or "not recorded", i))
+        out.append("UNPROTECTED: %s, entry order_id %s (pair %s): stops cover %d of %d; whatever has filled beyond "
+                   "that has no stop. When get_orders shows a fill: ticket.py stop --pair %s --filled-qty Q"
+                   % (e.get("symbol"), e.get("order_id") or "not recorded", pair, have, want, pair))
     return out
 
 
@@ -726,7 +750,7 @@ def cmd_show(a):
         blocks.append(text)
         any_ready = any_ready or ready
     print("\n\n".join(blocks))
-    for line in unprotected(orders, state, today):
+    for line in unprotected(state, today):
         print("\n" + line)
     print("\nOne ticket at a time: a yes covers one ticket (an entry and its stop), never the batch. Education "
           "and tooling, not financial advice.")
@@ -749,7 +773,8 @@ def cmd_approve(a):
     ml, _ = loss_of(rv, order)
     rec = _record(order, a.index, today, now, "approved" if m == "live" else "dry_run", reply=a.reply,
                   kind=rv.get("kind"), max_loss=ml, risk_check=risk.get("check_id"), mode=m,
-                  stop_index=sj, stop_fingerprint=fingerprint(stop) if stop else None)
+                  stop_index=sj, stop_fingerprint=fingerprint(stop) if stop else None,
+                  stop_leg=dict(stop) if stop else None)   # R38: the stop this yes covers, kept in the log
     state.setdefault("orders", []).append(rec)
     write_json(a.state, state)
     print("Recorded your yes for order %d%s: %s." % (a.index, (" and its stop (order %d)" % sj) if stop else "",
@@ -759,11 +784,19 @@ def cmd_approve(a):
         print(json.dumps(ti, indent=2, ensure_ascii=False))
         print("Nothing to record after this: a dry run sends nothing.")
     else:
-        stops = [r for r in state.get("orders", []) if rec_day(r) == today and r.get("leg") == "stop"
-                 and r.get("status") == "placed" and r.get("symbol") == rec["symbol"]]
-        if leg_of(order) == "exit" and stops:
-            print("First cancel the stop, so it cannot fire after this sell and open a short: cancel_order with "
-                  "variety regular, order_id %s. Then:" % stops[-1].get("order_id"))
+        if leg_of(order) == "exit":
+            mine = [(f, l) for f, l in stop_groups(state, today).values() if f.get("symbol") == rec["symbol"]]
+            placed = [l.get("order_id") for f, l in mine if l.get("status") == "placed"]
+            waiting = [f.get("at") for f, l in mine if l.get("status") == "stop_ready"]
+            if placed:   # R37: every one, or the one left fires after the sell and opens a short
+                print("First cancel every stop this pack placed for %s today, so none can fire after this sell and "
+                      "open a short: cancel_order with variety regular, order_id %s."
+                      % (rec["symbol"], ", then order_id ".join(str(x) for x in placed)))
+            if waiting:
+                print("A stop prepared at %s has no result recorded: look in get_orders for it, and cancel it too "
+                      "if it is there." % ", ".join(waiting))
+            if placed or waiting:
+                print("Then:")
         print("Now call %s with exactly:" % TOOL)
         print(json.dumps(ti, indent=2, ensure_ascii=False))
         print("Claude's card shows Allow once / Deny. Then: ticket.py result --index %d --status placed "
@@ -771,8 +804,8 @@ def cmd_approve(a):
               "first (its status_message says why), because a call that timed out may still have placed it."
               % a.index)
         if stop is not None:
-            print("When get_orders shows it COMPLETE (or part filled): ticket.py stop --index %d --filled-qty Q. "
-                  "Until its stop is placed the position is UNPROTECTED." % a.index)
+            print("When get_orders shows it COMPLETE (or part filled): ticket.py stop --pair %s --filled-qty Q. "
+                  "Until its stops cover the filled quantity the position is UNPROTECTED." % order.get("pair"))
     if leg_of(order) == "entry":
         for x in close_gate_lines(cfg, today):
             print(x)
@@ -788,18 +821,32 @@ def cmd_decline(a):
     return 0
 
 
+def _load_state_only(a):
+    """For the commands that must work after orders.json was replaced (R38): config, risk check, log, clock."""
+    cfg = read_json(a.config, "config", required=False) or {}
+    risk = read_json(a.risk, "risk check", required=False)
+    now, today = _clock()
+    return cfg, risk, load_state(a.state), today, now
+
+
 def cmd_result(a):
-    orders, cfg, risk, state, today, now = _load(a)
-    order = _pick(orders, a.index)
-    if leg_of(order) == "stop":
-        rec = latest(state, today, pair=order.get("pair"), leg="stop")
-        want = "stop_ready"
+    if (a.index is None) == (a.pair is None):
+        raise TicketError("say which: --index N (an entry or exit in orders.json) or --pair P (its stop)")
+    if a.pair is not None:          # a stop: from the log alone (R38)
+        cfg, risk, state, today, now = _load_state_only(a)
+        rec = latest(state, today, pair=a.pair, leg="stop")
+        if not rec or rec.get("status") != "stop_ready":
+            raise TicketError("pair %s has no stop prepared (ticket.py stop) without a result today" % a.pair)
+        what = "the stop of pair %s" % a.pair
     else:
+        orders, cfg, risk, state, today, now = _load(a)
+        order = _pick(orders, a.index)
+        if leg_of(order) == "stop":
+            raise TicketError("order %d is a stop: record its result with --pair %s" % (a.index, order.get("pair")))
         rec = latest(state, today, fp=fingerprint(order))
-        want = "approved"
-    if not rec or rec.get("status") != want:
-        raise TicketError("order %d has no %s recorded today; a result can only follow it"
-                          % (a.index, "ticket.py stop" if want == "stop_ready" else "live yes"))
+        if not rec or rec.get("status") != "approved":
+            raise TicketError("order %d has no live yes recorded today; a result can only follow it" % a.index)
+        what = "order %d" % a.index
     if a.status == "placed" and not a.order_id:
         raise TicketError("placed needs --order-id (Kite's order_id from the place_order reply or get_orders)")
     new = dict(rec, at=ist_iso(now), status=a.status)
@@ -811,7 +858,7 @@ def cmd_result(a):
         new["note"] = a.note
     state["orders"].append(new)
     write_json(a.state, state)
-    print("Recorded order %d as %s." % (a.index, a.status))
+    print("Recorded %s as %s." % (what, a.status))
     if a.status == "unsent":
         print("Nothing was sent. Run check.py again; a fresh PASS makes it READY for a new yes.")
     if a.status == "failed":
@@ -825,43 +872,51 @@ def cmd_result(a):
     elif a.status == "placed":
         print("When it fills, record it: ticket.py fill --symbol %s --side %s --qty Q --price P"
               % (new["symbol"], "buy" if new.get("transaction_type") == "BUY" else "sell"))
-    if a.status == "placed" and new.get("leg") == "entry":
-        for line in unprotected(orders, load_state(a.state), today):
-            print(line)
+    for line in unprotected(load_state(a.state), today):
+        print(line)
     return 0
 
 
 def cmd_stop(a):
-    orders, cfg, risk, state, today, now = _load(a)
-    order = _pick(orders, a.index)
-    if leg_of(order) != "entry":
-        raise TicketError("order %d is not an entry; ticket.py stop --index takes the entry's number" % a.index)
-    sj, stop = stop_of(orders, a.index)
-    if stop is None:
-        raise TicketError("order %d has no stop leg in %s" % (a.index, a.orders))
-    e = latest(state, today, pair=order.get("pair"), leg="entry")
+    """The stop the yes covered (R38: from the log), for a filled quantity the stops do not cover yet (R37)."""
+    cfg, risk, state, today, now = _load_state_only(a)
+    e = latest(state, today, pair=a.pair, leg="entry")
     if not e or e.get("status") != "placed":
-        raise TicketError("order %d is not recorded as placed today; record the entry first (ticket.py result "
-                          "--index %d --status placed --order-id ...)" % (a.index, a.index))
+        raise TicketError("pair %s has no entry recorded as placed today; record the entry first (ticket.py result "
+                          "--index N --status placed --order-id ...)" % a.pair)
+    stop = e.get("stop_leg")
+    if not isinstance(stop, dict):
+        raise TicketError("the yes for pair %s recorded no stop leg" % a.pair)
     # No dry-run refusal here: a placed entry is a real position (only a live yes can lead to "placed"), and
     # its stop must still be offered if the config was switched back to dry run since.
+    groups = [(f, l) for f, l in stop_groups(state, today).values() if f.get("pair") == a.pair]
+    waiting = [f for f, l in groups if l.get("status") == "stop_ready"]
+    if waiting:
+        raise TicketError("the stop prepared at %s for pair %s has no result yet: look in get_orders and record it "
+                          "first (ticket.py result --pair %s --status placed|denied|failed|unsent)"
+                          % (waiting[-1].get("at"), a.pair, a.pair))
+    want, have = int(e.get("quantity") or 0), covered(state, today, a.pair)
     q = _f(a.filled_qty)
-    if q is None or q != int(q) or not 1 <= q <= int(order.get("quantity") or 0):
-        raise TicketError("--filled-qty wants the filled quantity from get_orders, 1 to %s" % order.get("quantity"))
+    if q is None or q != int(q) or not 1 <= q <= want - have:
+        if have >= want:
+            raise TicketError("stops already cover all %d shares of pair %s" % (want, a.pair))
+        raise TicketError("--filled-qty wants the newly filled quantity from get_orders that no stop covers yet: "
+                          "stops cover %d of %d, so 1 to %d" % (have, want, want - have))
     why = window_now(stop, {"kind": "exit"}, risk or {}, now)
     if why:
         raise TicketError("the stop cannot go in now: %s" % why)
     s = dict(stop, quantity=int(q))
     ti = tool_input(s)
-    state.setdefault("orders", []).append(_record(s, sj, today, now, "stop_ready", entry_index=a.index,
+    sid = "%s/stop-%d" % (a.pair, len(groups) + 1)
+    state.setdefault("orders", []).append(_record(s, e.get("stop_index"), today, now, "stop_ready", stop_id=sid,
                                                   entry_order_id=e.get("order_id")))
     write_json(a.state, state)
-    print("The stop for order %d, for the %d filled: %s." % (a.index, int(q), plain(s)))
+    print("Stop %s, for %d shares: %s." % (sid, int(q), plain(s)))
     print("Call %s with exactly:" % TOOL)
     print(json.dumps(ti, indent=2, ensure_ascii=False))
-    print("Claude's card shows Allow once / Deny. Then: ticket.py result --index %d --status placed --order-id "
-          "<Kite order_id>. If more of the entry fills later, the stop covers only these %d shares: place a "
-          "second stop for the rest the same way after it shows in get_orders." % (sj, int(q)))
+    print("Claude's card shows Allow once / Deny. Then: ticket.py result --pair %s --status placed --order-id "
+          "<Kite order_id>. Stops then cover %d of %d; if more fills later, run ticket.py stop again for it."
+          % (a.pair, have + int(q), want))
     return 0
 
 
@@ -993,7 +1048,8 @@ def main(argv=None):
     p.add_argument("--reply")
     p = sub.add_parser("result", help="record what happened after the Allow once / Deny card")
     common(p)
-    p.add_argument("--index", type=int, required=True)
+    p.add_argument("--index", type=int, help="an entry or exit in orders.json")
+    p.add_argument("--pair", help="the pair id of a stop prepared with ticket.py stop")
     p.add_argument("--status", required=True, choices=["placed", "denied", "failed", "unsent"])
     p.add_argument("--order-id", help="Kite's order_id")
     p.add_argument("--note")
@@ -1002,7 +1058,7 @@ def main(argv=None):
     p.add_argument("--portfolio", default="trader/portfolio.json")
     p = sub.add_parser("stop", help="the stop's place_order input for the filled quantity")
     common(p)
-    p.add_argument("--index", type=int, required=True, help="the entry's number")
+    p.add_argument("--pair", required=True, help="the entry's pair id (show and the UNPROTECTED line give it)")
     p.add_argument("--filled-qty", required=True)
     p = sub.add_parser("fill", help="record a fill in trader/portfolio.json")
     p.add_argument("--symbol", required=True)

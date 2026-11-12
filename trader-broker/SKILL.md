@@ -44,8 +44,8 @@ gates, every time:
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" show                     # every ticket, READY or not
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" approve --index 1 --reply "yes"
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --order-id 251111000123456
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" stop --index 1 --filled-qty 32
-python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 2 --status placed --order-id 251111000123457
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" stop --pair M&M-2026-11-11-101600 --filled-qty 32
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --pair M&M-2026-11-11-101600 --status placed --order-id 251111000123457
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol M&M --side buy --qty 32 --price 3427
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol M&M --price 3460.5
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log
@@ -160,13 +160,17 @@ In Claude Code instead of Claude Desktop, keep the order tools on ask in
    If `show` says EXPIRED or "your yes was on an earlier check", look at
    `get_orders` first: if it went out, record what happened; only if it did
    not, record `--status unsent`, check again and ask for a new yes.
-6. **The stop, after the fill.** Until the stop is placed, `show` prints
-   **UNPROTECTED** for that position. Read `get_orders`: when the entry is
-   COMPLETE, or partly filled, run `ticket.py stop --index N --filled-qty Q`
-   with the filled quantity, call `place_order` with the JSON it prints (its
-   own Allow once card; the yes already covered the pair), then `ticket.py
-   result --index <the stop's number> --status placed --order-id ...`. If
-   more fills later, place a second stop for the rest the same way.
+6. **The stop, after the fill.** While the stops cover less than the
+   entry's quantity, `show` prints **UNPROTECTED** with the pair id and how
+   many shares the stops cover ("stops cover 20 of 32"). Read `get_orders`:
+   when the entry is COMPLETE, or partly filled, run `ticket.py stop --pair
+   <pair> --filled-qty Q` with the filled quantity no stop covers yet, call
+   `place_order` with the JSON it prints (its own Allow once card; the yes
+   already covered the pair), then `ticket.py result --pair <pair> --status
+   placed --order-id ...`. If more fills later, run `stop` again for the new
+   shares. The stop comes from the log of your yes, not from
+   `trader/orders.json`, so a new plan or a flatten ticket loses nothing, and
+   `stop` never covers more than the entry's quantity in all.
 7. Record the fill: `ticket.py fill --symbol M&M --side buy --qty 32 --price
    3427` (from `get_order_trades`). It goes in as today's MIS position, the
    only kind trader-risk counts as held for a sell (R35).
@@ -191,9 +195,11 @@ position.
 3. `/trader-risk`. A sell of today's MIS position is never blocked by the
    daily limits.
 4. `ticket.py show`, the user's yes, `ticket.py approve`. If the pack placed
-   a stop for that stock today, approve names it: **cancel the stop first**
-   (`cancel_order`, variety regular, that order_id), so it cannot fire after
-   the sell and open a short. Then `place_order`, then `result`.
+   stops for that stock today, approve names every one: **cancel each stop
+   first** (`cancel_order`, variety regular, each order_id), so none can fire
+   after the sell and open a short. A stop prepared with no result recorded
+   is named too: look for it in `get_orders`. Then `place_order`, then
+   `result`.
 
 ## Example: the reel
 
