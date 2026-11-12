@@ -420,7 +420,8 @@ class Cli(unittest.TestCase):
     def test_quote_holdings_from_portfolio_and_plan(self):
         pf = os.path.join(self.d, "portfolio.json")
         with open(pf, "w") as fh:
-            json.dump({"cash": 0, "positions": [{"ticker": "SBIN", "shares": 1}]}, fh)
+            json.dump({"cash": 0, "positions": [{"tradingsymbol": "SBIN", "product": "MIS", "date": "2026-11-11",
+                                                 "quantity": 1, "average_price": 950.0}]}, fh)
         code, text, _ = run(["quote", "--holdings", "--portfolio", pf, "--plan", PLAN, "--offline", QDIR, "--json"])
         self.assertEqual(code, 0)
         self.assertEqual(sorted(json.loads(text)["quotes"]), ["M&M", "SBIN"])

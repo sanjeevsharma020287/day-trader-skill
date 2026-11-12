@@ -185,6 +185,12 @@ class Cli(unittest.TestCase):
         doc = json.loads(text)
         self.assertEqual(sorted(m["symbol"] for m in doc["moves"]), ["M&M", "SBIN"])
         self.assertEqual(news.watch_from_files(os.path.join(self.d, "none"), wl, plan), {"SBIN": None, "M&M": None})
+        pf = os.path.join(self.d, "portfolio.json")  # as ticket.py fill writes it
+        with open(pf, "w") as fh:
+            json.dump({"cash": 0, "positions": [{"tradingsymbol": "INFY", "product": "MIS", "date": "2026-11-11",
+                                                 "quantity": 1, "average_price": 1600.0}]}, fh)
+        self.assertEqual(news.watch_from_files(pf, os.path.join(self.d, "none"), os.path.join(self.d, "none")),
+                         {"INFY": None})
         a1 = [i for i in doc["items"] if i["id"] == "gn:SYN-A1"][0]
         self.assertEqual(a1["touches"], ["M&M"])
 

@@ -562,7 +562,7 @@ def holdings(a):
     syms = []
     pf = _read(a.portfolio, {})
     for p in pf.get("positions", []) if isinstance(pf, dict) else []:
-        syms.append(str(p.get("ticker") or p.get("symbol") or "").upper())
+        syms.append(str(p.get("tradingsymbol") or p.get("ticker") or p.get("symbol") or "").upper())
     plan = _read(a.plan, {})
     if isinstance(plan, dict) and plan.get("symbol"):
         syms.append(str(plan["symbol"]).upper())

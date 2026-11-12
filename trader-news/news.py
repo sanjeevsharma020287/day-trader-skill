@@ -260,7 +260,7 @@ def watch_from_files(portfolio="trader/portfolio.json", watchlist="trader/watchl
         out.setdefault(pl["symbol"].upper(), pl.get("name"))
     pf = load_json(portfolio) or {}
     for p in pf.get("positions", []):
-        sym = p.get("symbol") or p.get("ticker")
+        sym = p.get("tradingsymbol") or p.get("symbol") or p.get("ticker")   # trader-broker's fill writes tradingsymbol
         if sym:
             out[sym.upper()] = p.get("name") or out.get(sym.upper())
     return out
